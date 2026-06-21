@@ -1,0 +1,25 @@
+client:
+  server_addr: "your-server.com"
+  server_port: 2222
+  username: "vpnuser"
+  password: ""
+  private_key_path: "~/.ssh/id_rsa"
+  tun_name: "ssh-vpn0"
+  tun_addr: "10.0.0.2"
+  tun_netmask: "255.255.255.0"
+  mtu: 1400
+  auto_connect: true
+
+channels:
+  min_read: 2
+  max_read: 8
+  min_write: 1
+  max_write: 4
+  read_ratio: 0.8
+  write_ratio: 0.2
+  health_check: 5s
+  timeout: 30s
+
+security:
+  encryption: "aes256-gcm"
+  compression: "lz4"

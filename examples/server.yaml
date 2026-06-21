@@ -1,0 +1,27 @@
+server:
+  listen_addr: "0.0.0.0"
+  listen_port: 2222
+  max_clients: 100
+  tun_name: "ssh-vpn0"
+  tun_addr: "10.0.0.1"
+  tun_netmask: "255.255.255.0"
+  mtu: 1400
+
+channels:
+  min_read: 2
+  max_read: 8
+  min_write: 1
+  max_write: 4
+  read_ratio: 0.8
+  write_ratio: 0.2
+  health_check: 5s
+  timeout: 30s
+
+security:
+  encryption: "aes256-gcm"
+  compression: "lz4"
+
+monitor:
+  enabled: true
+  listen_addr: "127.0.0.1"
+  listen_port: 9090

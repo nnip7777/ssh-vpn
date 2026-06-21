@@ -1,0 +1,39 @@
+# Binaries
+build/
+*.exe
+client
+server
+ssh-vpn-config
+
+# Go
+*.test
+*.out
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (NEVER commit)
+host_key
+host_key.pub
+authorized_keys
+*.pem
+*.key
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+
+# Tmp
+tmp/
