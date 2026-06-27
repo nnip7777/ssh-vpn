@@ -1,0 +1,58 @@
+default via 72.56.246.1 dev eth0 proto dhcp src 72.56.246.125 metric 100 
+10.0.0.0/8 dev wg0 scope link 
+10.8.0.0/24 dev ssh-vpn0 proto kernel scope link src 10.8.0.1 
+72.56.246.0/24 dev eth0 proto kernel scope link src 72.56.246.125 metric 100 
+72.56.246.1 dev eth0 proto dhcp scope link src 72.56.246.125 metric 100 
+85.193.93.193 via 72.56.246.1 dev eth0 proto dhcp src 72.56.246.125 metric 100 
+85.193.93.194 via 72.56.246.1 dev eth0 proto dhcp src 72.56.246.125 metric 100 
+169.254.169.0/24 dev eth0 proto dhcp scope link src 72.56.246.125 metric 100 
+172.16.0.0/12 dev wg0 scope link 
+172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1 
+172.29.172.0/24 dev amn0 proto kernel scope link src 172.29.172.1 
+192.168.0.0/16 dev wg0 scope link 
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host noprefixroute 
+       valid_lft forever preferred_lft forever
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
+    link/ether 42:70:56:15:8b:aa brd ff:ff:ff:ff:ff:ff
+    altname enp0s3
+    altname ens3
+    inet 72.56.246.125/24 metric 100 brd 72.56.246.255 scope global dynamic eth0
+       valid_lft 55386sec preferred_lft 55386sec
+    inet6 2a03:6f00:a::1:637e/128 scope global dynamic noprefixroute 
+       valid_lft 2172189sec preferred_lft 184989sec
+    inet6 fe80::4070:56ff:fe15:8baa/64 scope link 
+       valid_lft forever preferred_lft forever
+4: ssh-vpn0: <POINTOPOINT,MULTICAST,NOARP,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UNKNOWN group default qlen 500
+    link/none 
+    inet 10.8.0.1/24 scope global ssh-vpn0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::1dd7:46cf:6368:b712/64 scope link stable-privacy 
+       valid_lft forever preferred_lft forever
+6: docker0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default 
+    link/ether ea:40:45:22:fd:23 brd ff:ff:ff:ff:ff:ff
+    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::e840:45ff:fe22:fd23/64 scope link 
+       valid_lft forever preferred_lft forever
+7: amn0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default 
+    link/ether b6:ca:79:c4:4d:e9 brd ff:ff:ff:ff:ff:ff
+    inet 172.29.172.1/24 brd 172.29.172.255 scope global amn0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::b4ca:79ff:fec4:4de9/64 scope link 
+       valid_lft forever preferred_lft forever
+8: veth2358aaa@if2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master amn0 state UP group default 
+    link/ether ee:c5:99:a9:4b:0d brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    inet6 fe80::ecc5:99ff:fea9:4b0d/64 scope link 
+       valid_lft forever preferred_lft forever
+9: veth92a0ce8@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP group default 
+    link/ether d6:aa:a9:59:bb:b4 brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    inet6 fe80::d4aa:a9ff:fe59:bbb4/64 scope link 
+       valid_lft forever preferred_lft forever
+12: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1280 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/none 
+    inet 10.129.4.105/32 scope global wg0
+       valid_lft forever preferred_lft forever

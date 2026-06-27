@@ -1,0 +1,12 @@
+default via 72.56.246.1 dev eth0 proto dhcp src 72.56.246.125 metric 100 
+10.0.0.0/8 dev wg0 scope link 
+10.8.0.0/24 dev ssh-vpn0 proto kernel scope link src 10.8.0.1 
+72.56.246.0/24 dev eth0 proto kernel scope link src 72.56.246.125 metric 100 
+72.56.246.1 dev eth0 proto dhcp scope link src 72.56.246.125 metric 100 
+85.193.93.193 via 72.56.246.1 dev eth0 proto dhcp src 72.56.246.125 metric 100 
+85.193.93.194 via 72.56.246.1 dev eth0 proto dhcp src 72.56.246.125 metric 100 
+169.254.169.0/24 dev eth0 proto dhcp scope link src 72.56.246.125 metric 100 
+172.16.0.0/12 dev wg0 scope link 
+172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1 
+172.29.172.0/24 dev amn0 proto kernel scope link src 172.29.172.1 
+192.168.0.0/16 dev wg0 scope link 

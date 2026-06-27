@@ -1,0 +1,23 @@
+client:
+    server_addr: 72.56.246.125
+    server_port: 2222
+    username: vpnuser
+    password: "changeme123"
+    private_key_path: ""
+    tun_name: ssh-vpn0
+    tun_addr: 10.8.0.2
+    tun_netmask: 255.255.255.0
+    mtu: 1400
+    auto_connect: true
+channels:
+    min_read: 4
+    max_read: 8
+    min_write: 2
+    max_write: 4
+    read_ratio: 0.8
+    write_ratio: 0.2
+    health_check: 5s
+    timeout: 30s
+security:
+    encryption: aes256-gcm
+    compression: lz4
