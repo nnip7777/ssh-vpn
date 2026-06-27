@@ -56,8 +56,7 @@ func (t *Transport) OpenChannel(channelType string) (ssh.Channel, <-chan *ssh.Re
 		return nil, nil, fmt.Errorf("failed to open channel: %w", err)
 	}
 
-	t.logger.Info("opened SSH channel",
-		zap.String("type", channelType))
+	t.logger.Info("opened SSH channel", zap.String("type", channelType))
 
 	return ch, reqs, nil
 }
@@ -93,11 +92,16 @@ type Server struct {
 	clients    map[string]*ClientSession
 	mu         sync.RWMutex
 	logger     *zap.Logger
+	toTUN      *channel.RingBuffer
+	fromTUN    *channel.RingBuffer
+	stopCh     chan struct{}
+	running    bool
 }
 
 type ClientSession struct {
 	conn     *ssh.ServerConn
 	channels map[uint16]ssh.Channel
+	types    map[uint16]string
 	mu       sync.RWMutex
 }
 
@@ -115,15 +119,134 @@ func NewServer(addr string, config *ssh.ServerConfig, manager *channel.Manager, 
 		tunIface: tunIface,
 		clients:  make(map[string]*ClientSession),
 		logger:   logger,
+		toTUN:    channel.NewRingBuffer(1400 * 200),
+		fromTUN:  channel.NewRingBuffer(1400 * 200),
+		stopCh:   make(chan struct{}),
 	}, nil
+}
+
+func (s *Server) Start() {
+	s.mu.Lock()
+	s.running = true
+	s.mu.Unlock()
+
+	go s.readFromTUN()
+	go s.writeToTUN()
+
+	s.logger.Info("server tunnel started")
+}
+
+func (s *Server) Stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.running {
+		return
+	}
+
+	s.running = false
+	close(s.stopCh)
+	s.logger.Info("server tunnel stopped")
+}
+
+func (s *Server) readFromTUN() {
+	buf := make([]byte, 1500)
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		default:
+		}
+
+		n, err := s.tunIface.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				s.logger.Error("TUN read error", zap.Error(err))
+			}
+			continue
+		}
+
+		if n == 0 {
+			continue
+		}
+
+		s.logger.Debug("TUN read", zap.Int("bytes", n))
+
+		data := make([]byte, n)
+		copy(data, buf[:n])
+		s.fromTUN.Write(data)
+	}
+}
+
+func (s *Server) writeToTUN() {
+	buf := make([]byte, 1500)
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		default:
+		}
+
+		n, err := s.toTUN.Read(buf)
+		if err != nil || n == 0 {
+			continue
+		}
+
+		if _, werr := s.tunIface.Write(buf[:n]); werr != nil {
+			s.logger.Error("TUN write error", zap.Error(werr))
+		}
+	}
+}
+
+func (s *Server) BroadcastToClients() {
+	buf := make([]byte, 1500)
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		default:
+		}
+
+		n, err := s.fromTUN.Read(buf)
+		if err != nil || n == 0 {
+			continue
+		}
+
+		data := make([]byte, n)
+		copy(data, buf[:n])
+
+		s.mu.RLock()
+		for _, client := range s.clients {
+			client.mu.RLock()
+			for id, ch := range client.channels {
+				if client.types[id] == "vpn-read" {
+					if _, werr := ch.Write(data); werr != nil {
+						s.logger.Debug("failed to write to client channel",
+							zap.Uint16("channel", id),
+							zap.Error(werr))
+					} else {
+						break
+					}
+				}
+			}
+			client.mu.RUnlock()
+		}
+		s.mu.RUnlock()
+	}
 }
 
 func (s *Server) Accept() error {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
+			s.mu.RLock()
+			closed := s.listener == nil
+			s.mu.RUnlock()
+			if closed {
+				return nil
+			}
 			s.logger.Error("failed to accept connection", zap.Error(err))
-			continue
+			return err
 		}
 
 		go s.handleConnection(conn)
@@ -143,6 +266,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 	client := &ClientSession{
 		conn:     sshConn,
 		channels: make(map[uint16]ssh.Channel),
+		types:    make(map[uint16]string),
 	}
 
 	s.mu.Lock()
@@ -180,14 +304,16 @@ func (s *Server) handleChannel(client *ClientSession, newChan ssh.NewChannel) {
 	}
 
 	id := uint16(len(client.channels) + 1)
+	channelType := newChan.ChannelType()
 	client.mu.Lock()
 	client.channels[id] = ch
+	client.types[id] = channelType
 	client.mu.Unlock()
 
 	s.logger.Info("new channel opened",
 		zap.String("client", client.conn.RemoteAddr().String()),
 		zap.Uint16("id", id),
-		zap.String("type", newChan.ChannelType()))
+		zap.String("type", channelType))
 
 	go func() {
 		for req := range reqs {
@@ -195,7 +321,9 @@ func (s *Server) handleChannel(client *ClientSession, newChan ssh.NewChannel) {
 		}
 	}()
 
-	go s.handleChannelData(client, id, ch)
+	if channelType == "vpn-write" {
+		go s.handleChannelData(client, id, ch)
+	}
 }
 
 func (s *Server) handleRequest(client *ClientSession, channelID uint16, req *ssh.Request) {
@@ -217,6 +345,8 @@ func (s *Server) handleChannelData(client *ClientSession, channelID uint16, ch s
 		ch.Close()
 	}()
 
+	s.logger.Info("channel data handler started", zap.Uint16("channel", channelID))
+
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := ch.Read(buf)
@@ -230,16 +360,16 @@ func (s *Server) handleChannelData(client *ClientSession, channelID uint16, ch s
 		}
 
 		if n > 0 {
-			if _, err := s.tunIface.Write(buf[:n]); err != nil {
-				s.logger.Error("failed to write to TUN",
-					zap.Error(err),
-					zap.Uint16("channel", channelID))
-			}
+			data := make([]byte, n)
+			copy(data, buf[:n])
+			s.toTUN.Write(data)
 		}
 	}
 }
 
 func (s *Server) Close() error {
+	s.Stop()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

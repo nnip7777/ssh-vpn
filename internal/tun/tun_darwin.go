@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 )
 
 type Interface struct {
@@ -25,27 +26,24 @@ type Interface struct {
 type Config struct {
 	Name    string
 	Addr    string
+	Peer    string
 	Netmask string
 	MTU     int
 }
 
 func New(cfg Config, logger *zap.Logger) (*Interface, error) {
-	file, err := os.OpenFile("/dev/tun0", os.O_RDWR, 0)
+	fd, name, err := openUTUN()
 	if err != nil {
-		name, err2 := createUTUN(cfg.Name)
-		if err2 != nil {
-			return nil, fmt.Errorf("failed to create TUN: %w (utun: %w)", err, err2)
-		}
-		cfg.Name = name
-		file, err = openUTUN(name)
-		if err != nil {
-			return nil, fmt.Errorf("failed to open UTUN: %w", err)
-		}
+		return nil, fmt.Errorf("failed to create UTUN: %w", err)
 	}
+
+	unix.SetNonblock(fd, true)
+	unix.CloseOnExec(fd)
+	file := os.NewFile(uintptr(fd), "")
 
 	tun := &Interface{
 		file:    file,
-		name:    cfg.Name,
+		name:    name,
 		addr:    cfg.Addr,
 		netmask: cfg.Netmask,
 		logger:  logger,
@@ -56,55 +54,92 @@ func New(cfg Config, logger *zap.Logger) (*Interface, error) {
 		return nil, err
 	}
 
+	ip := net.ParseIP(cfg.Addr).To4()
+	if ip != nil {
+		ip[3] = 0
+		subnet := fmt.Sprintf("%s/24", ip.String())
+		exec.Command("route", "-n", "add", "-net", subnet, "-interface", name).Run()
+	}
+
 	logger.Info("TUN interface created",
-		zap.String("name", cfg.Name),
+		zap.String("name", name),
 		zap.String("addr", cfg.Addr))
 
 	return tun, nil
 }
 
-func createUTUN(name string) (string, error) {
+func openUTUN() (int, string, error) {
 	for i := 0; i < 10; i++ {
-		ifname := fmt.Sprintf("utun%d", i)
-		cmd := exec.Command("ifconfig", ifname, "create")
-		if err := cmd.Run(); err == nil {
-			return ifname, nil
+		fd, name, err := tryUTUN(i)
+		if err == nil {
+			return fd, name, nil
 		}
 	}
-	return "", fmt.Errorf("failed to create UTUN interface")
+	return -1, "", fmt.Errorf("no UTUN device available")
 }
 
-func openUTUN(name string) (*os.File, error) {
-	return os.OpenFile("/dev/"+name, os.O_RDWR, 0)
+func tryUTUN(unit int) (int, string, error) {
+	fd, err := unix.Socket(unix.AF_SYSTEM, unix.SOCK_DGRAM, 2)
+	if err != nil {
+		return -1, "", fmt.Errorf("socket: %w", err)
+	}
+
+	ctlInfo := &unix.CtlInfo{}
+	copy(ctlInfo.Name[:], []byte("com.apple.net.utun_control"))
+	if err := unix.IoctlCtlInfo(fd, ctlInfo); err != nil {
+		unix.Close(fd)
+		return -1, "", fmt.Errorf("IoctlCtlInfo: %w", err)
+	}
+
+	sc := &unix.SockaddrCtl{
+		ID:   ctlInfo.Id,
+		Unit: uint32(unit) + 1,
+	}
+
+	if err := unix.Connect(fd, sc); err != nil {
+		unix.Close(fd)
+		return -1, "", fmt.Errorf("Connect: %w", err)
+	}
+
+	name, err := unix.GetsockoptString(fd, 2, 2)
+	if err != nil {
+		unix.Close(fd)
+		return -1, "", fmt.Errorf("GetSockoptString: %w", err)
+	}
+
+	return fd, name, nil
 }
 
 func (t *Interface) configure(cfg Config) error {
 	commands := [][]string{
-		{"ifconfig", t.name, cfg.Addr, cfg.Addr, "netmask", cfg.Netmask, "up"},
+		{"ifconfig", t.name, cfg.Addr, cfg.Peer, "netmask", cfg.Netmask},
+		{"ifconfig", t.name, "up"},
 		{"ifconfig", t.name, "mtu", fmt.Sprintf("%d", cfg.MTU)},
 	}
-
 	for _, cmd := range commands {
-		if err := exec.Command(cmd[0], cmd[1:]...).Run(); err != nil {
-			return fmt.Errorf("failed to execute %s: %w", cmd[0], err)
+		if out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput(); err != nil {
+			return fmt.Errorf("failed: %s: %s: %w", cmd, string(out), err)
 		}
 	}
-
 	return nil
 }
 
 func (t *Interface) Read(p []byte) (int, error) {
 	buf := make([]byte, len(p)+4)
 	n, err := t.file.Read(buf)
-	if err != nil {
+	if n < 4 {
 		return 0, err
 	}
-	copy(p, buf[4:])
+	copy(p, buf[4:n])
 	return n - 4, nil
 }
 
 func (t *Interface) Write(p []byte) (int, error) {
 	buf := make([]byte, len(p)+4)
+	buf[0] = 0x00
+	buf[1] = 0x00
+	buf[2] = 0x00
+	buf[3] = unix.AF_INET
 	copy(buf[4:], p)
 	return t.file.Write(buf)
 }
@@ -122,24 +157,11 @@ func (t *Interface) IP() net.IP {
 }
 
 func (t *Interface) SetMTU(mtu int) error {
-	cmd := exec.Command("ifconfig", t.name, "mtu", fmt.Sprintf("%d", mtu))
-	return cmd.Run()
-}
-
-func (t *Interface) runRoute(args ...string) error {
-	cmd := exec.Command("route", args...)
-	return cmd.Run()
+	out, err := exec.Command("ifconfig", t.name, "mtu", fmt.Sprintf("%d", mtu)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("setmtu: %s: %w", string(out), err)
+	}
+	return nil
 }
 
 var _ io.ReadWriteCloser = (*Interface)(nil)
-
-func ParseIPv4Header(data []byte) (headerLen int, protocol byte, src, dst net.IP) {
-	if len(data) < 20 {
-		return 0, 0, nil, nil
-	}
-	headerLen = int(data[0]&0x0F) * 4
-	protocol = data[9]
-	src = net.IP(data[12:16])
-	dst = net.IP(data[16:20])
-	return
-}

@@ -20,6 +20,9 @@ type Tunnel struct {
 	mu         sync.RWMutex
 	running    bool
 	stopCh     chan struct{}
+
+	toChannels *channel.RingBuffer
+	fromChannels *channel.RingBuffer
 }
 
 func NewTunnel(iface *Interface, manager *channel.Manager, compressor compress.Compressor, mtu int, logger *zap.Logger) *Tunnel {
@@ -30,6 +33,8 @@ func NewTunnel(iface *Interface, manager *channel.Manager, compressor compress.C
 		mtu:        mtu,
 		logger:     logger,
 		stopCh:     make(chan struct{}),
+		toChannels: channel.NewRingBuffer(mtu * 100),
+		fromChannels: channel.NewRingBuffer(mtu * 100),
 	}
 }
 
@@ -44,6 +49,8 @@ func (t *Tunnel) Start() error {
 
 	go t.readFromTUN()
 	go t.writeToTUN()
+	go t.readFromChannels()
+	go t.writeToChannels()
 
 	return nil
 }
@@ -63,7 +70,6 @@ func (t *Tunnel) Stop() {
 
 func (t *Tunnel) readFromTUN() {
 	buf := make([]byte, t.mtu+100)
-
 	for {
 		select {
 		case <-t.stopCh:
@@ -83,40 +89,14 @@ func (t *Tunnel) readFromTUN() {
 			continue
 		}
 
-		data := buf[:n]
-
-		if t.compressor != nil {
-			compressed := make([]byte, n+100)
-			compN, err := t.compressor.Compress(compressed, data)
-			if err != nil {
-				t.logger.Error("failed to compress data", zap.Error(err))
-				continue
-			}
-			data = compressed[:compN]
-		}
-
-		ch := t.manager.GetNextWriteChannel()
-		if ch == nil {
-			t.logger.Warn("no write channel available")
-			continue
-		}
-
-		if _, err := ch.Write(data); err != nil {
-			t.logger.Error("failed to write to channel",
-				zap.Uint16("channel_id", ch.ID),
-				zap.Error(err))
-			continue
-		}
-
-		t.logger.Debug("sent packet to channel",
-			zap.Uint16("channel_id", ch.ID),
-			zap.Int("bytes", len(data)))
+		data := make([]byte, n)
+		copy(data, buf[:n])
+		t.toChannels.Write(data)
 	}
 }
 
 func (t *Tunnel) writeToTUN() {
 	buf := make([]byte, t.mtu+100)
-
 	for {
 		select {
 		case <-t.stopCh:
@@ -124,12 +104,78 @@ func (t *Tunnel) writeToTUN() {
 		default:
 		}
 
-		ch := t.manager.GetNextReadChannel()
-		if ch == nil {
-			time.Sleep(10 * time.Millisecond)
+		n, err := t.fromChannels.Read(buf)
+		if err != nil || n == 0 {
 			continue
 		}
 
+		if _, err := t.iface.Write(buf[:n]); err != nil {
+			t.logger.Error("failed to write to TUN", zap.Error(err))
+		}
+	}
+}
+
+func (t *Tunnel) writeToChannels() {
+	buf := make([]byte, t.mtu+100)
+	for {
+		select {
+		case <-t.stopCh:
+			return
+		default:
+		}
+
+		n, err := t.toChannels.Read(buf)
+		if err != nil || n == 0 {
+			continue
+		}
+
+		ch := t.manager.GetNextWriteChannel()
+		if ch == nil {
+			time.Sleep(time.Millisecond)
+			continue
+		}
+
+		if _, werr := ch.Write(buf[:n]); werr != nil {
+			t.logger.Error("failed to write to channel",
+				zap.Uint16("channel_id", ch.ID),
+				zap.Error(werr))
+			t.manager.RemoveChannel(ch.ID)
+		}
+	}
+}
+
+func (t *Tunnel) readFromChannels() {
+	channels := t.manager.GetReadChannels()
+	for _, ch := range channels {
+		go t.readFromChannel(ch)
+	}
+
+	for {
+		select {
+		case <-t.stopCh:
+			return
+		case <-time.After(500 * time.Millisecond):
+			newChannels := t.manager.GetReadChannels()
+			for _, ch := range newChannels {
+				found := false
+				for _, existing := range channels {
+					if existing.ID == ch.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					channels = append(channels, ch)
+					go t.readFromChannel(ch)
+				}
+			}
+		}
+	}
+}
+
+func (t *Tunnel) readFromChannel(ch *channel.Channel) {
+	buf := make([]byte, t.mtu+100)
+	for {
 		n, err := ch.Read(buf)
 		if err != nil {
 			if err != io.EOF {
@@ -137,33 +183,16 @@ func (t *Tunnel) writeToTUN() {
 					zap.Uint16("channel_id", ch.ID),
 					zap.Error(err))
 			}
-			continue
+			return
 		}
 
 		if n == 0 {
 			continue
 		}
 
-		data := buf[:n]
-
-		if t.compressor != nil {
-			decompressed := make([]byte, t.mtu+100)
-			compN, err := t.compressor.Decompress(decompressed, data)
-			if err != nil {
-				t.logger.Error("failed to decompress data", zap.Error(err))
-				continue
-			}
-			data = decompressed[:compN]
-		}
-
-		if _, err := t.iface.Write(data); err != nil {
-			t.logger.Error("failed to write to TUN", zap.Error(err))
-			continue
-		}
-
-		t.logger.Debug("received packet from channel",
-			zap.Uint16("channel_id", ch.ID),
-			zap.Int("bytes", len(data)))
+		data := make([]byte, n)
+		copy(data, buf[:n])
+		t.fromChannels.Write(data)
 	}
 }
 

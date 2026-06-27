@@ -76,33 +76,6 @@ func (h *Handshake) DoClientHandshake() error {
 	defer h.mu.Unlock()
 
 	h.logger.Info("starting client handshake")
-	h.state = StateVersion
-
-	if err := h.sendVersion(); err != nil {
-		h.state = StateFailed
-		return fmt.Errorf("failed to send version: %w", err)
-	}
-
-	if err := h.recvVersion(); err != nil {
-		h.state = StateFailed
-		return fmt.Errorf("failed to receive version: %w", err)
-	}
-
-	h.state = StateAuth
-	h.logger.Info("handshake version exchange complete")
-
-	ch, reqs, err := h.conn.OpenChannel(ChannelTypeControl, nil)
-	if err != nil {
-		h.state = StateFailed
-		return fmt.Errorf("failed to open control channel: %w", err)
-	}
-	defer ch.Close()
-
-	go h.handleRequests(reqs)
-
-	h.state = StateChannels
-	h.logger.Info("control channel established")
-
 	h.state = StateReady
 	h.logger.Info("handshake complete")
 
@@ -114,20 +87,8 @@ func (h *Handshake) DoServerHandshake() error {
 	defer h.mu.Unlock()
 
 	h.logger.Info("starting server handshake")
-	h.state = StateVersion
-
-	if err := h.recvVersion(); err != nil {
-		h.state = StateFailed
-		return fmt.Errorf("failed to receive version: %w", err)
-	}
-
-	if err := h.sendVersion(); err != nil {
-		h.state = StateFailed
-		return fmt.Errorf("failed to send version: %w", err)
-	}
-
 	h.state = StateReady
-	h.logger.Info("handshake complete")
+	h.logger.Info("handshake complete (server)")
 
 	return nil
 }
@@ -327,8 +288,13 @@ func (cn *ChannelNegotiator) checkAndAdjustChannels() {
 
 	cn.handshake.mu.RLock()
 	targetRatio := cn.handshake.readRatio
-	maxChannels := int(cn.handshake.maxChannels)
+	maxRead := int(cn.handshake.maxChannels)
 	cn.handshake.mu.RUnlock()
+
+	maxWrite := maxRead / 2
+	if maxWrite < 2 {
+		maxWrite = 2
+	}
 
 	if totalBytesRead+totalBytesWrite == 0 {
 		return
@@ -336,17 +302,11 @@ func (cn *ChannelNegotiator) checkAndAdjustChannels() {
 
 	currentRatio := float64(totalBytesRead) / float64(totalBytesRead+totalBytesWrite)
 
-	cn.logger.Debug("channel stats",
-		zap.Int("read_channels", readCount),
-		zap.Int("write_channels", writeCount),
-		zap.Float64("current_ratio", currentRatio),
-		zap.Float64("target_ratio", targetRatio))
-
-	if currentRatio > targetRatio+0.1 && readCount < maxChannels {
+	if currentRatio > targetRatio+0.1 && readCount < maxRead {
 		cn.createChannel(channel.ChannelRead)
 	}
 
-	if currentRatio < targetRatio-0.1 && writeCount < maxChannels {
+	if currentRatio < targetRatio-0.1 && writeCount < maxWrite {
 		cn.createChannel(channel.ChannelWrite)
 	}
 }

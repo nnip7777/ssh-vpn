@@ -25,7 +25,7 @@ echo "  ✓ Server built for Linux (amd64, arm64)"
 
 # Build clients
 echo ""
-echo "Building clients..."
+echo "Building CLI clients..."
 
 # macOS
 echo "  macOS..."
@@ -43,6 +43,27 @@ echo "    ✓ Linux (amd64, arm64)"
 echo "  Windows..."
 GOOS=windows GOARCH=amd64 go build -o build/ssh-vpn-client-windows-amd64.exe ./cmd/client
 echo "    ✓ Windows (amd64)"
+
+# Build GUI clients
+echo ""
+echo "Building GUI clients..."
+
+# macOS
+echo "  macOS GUI..."
+CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -o build/ssh-vpn-gui-macos-amd64 ./cmd/guiclient
+CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -o build/ssh-vpn-gui-macos-arm64 ./cmd/guiclient
+echo "    ✓ macOS GUI (amd64, arm64)"
+
+# Linux
+echo "  Linux GUI..."
+CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o build/ssh-vpn-gui-linux-amd64 ./cmd/guiclient
+CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -o build/ssh-vpn-gui-linux-arm64 ./cmd/guiclient
+echo "    ✓ Linux GUI (amd64, arm64)"
+
+# Windows
+echo "  Windows GUI..."
+CGO_ENABLED=1 GOOS=windows GOARCH=amd64 go build -o build/ssh-vpn-gui-windows-amd64.exe ./cmd/guiclient
+echo "    ✓ Windows GUI (amd64)"
 
 echo ""
 echo "=== Build Complete ==="

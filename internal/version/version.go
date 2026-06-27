@@ -6,7 +6,7 @@ import (
 )
 
 var (
-	Version   = "0.1.0"
+	Version   = "0.3.0"
 	GitCommit = "unknown"
 	BuildDate = "unknown"
 	AppName   = "ssh-vpn"

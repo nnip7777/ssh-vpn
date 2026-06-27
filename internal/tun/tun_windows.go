@@ -25,6 +25,7 @@ type Interface struct {
 type Config struct {
 	Name    string
 	Addr    string
+	Peer    string
 	Netmask string
 	MTU     int
 }

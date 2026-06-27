@@ -1,6 +1,6 @@
 # SSH VPN
 
-[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://github.com/nnip7777/ssh-vpn/releases)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://github.com/nnip7777/ssh-vpn/releases)
 [![Go](https://img.shields.io/badge/go-1.22+-00ADD8.svg)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20iOS%20%7C%20Android-lightgrey.svg)](#platform-support)
@@ -35,6 +35,7 @@ Multi-channel VPN with load balancing and fault tolerance over SSH.
 - **Compression**: LZ4 compression for bandwidth savings
 - **Cross-Platform**: Linux, macOS, Windows, iOS, Android
 - **Encrypted**: AES-256-GCM via SSH protocol
+- **GUI Client**: System tray, settings, auto-update (macOS, Linux, Windows)
 
 ## Quick Start
 
@@ -42,7 +43,7 @@ Multi-channel VPN with load balancing and fault tolerance over SSH.
 
 ```bash
 # Download
-wget https://github.com/nnip7777/ssh-vpn/releases/download/v0.1.0/ssh-vpn-server-linux-amd64
+wget https://github.com/nnip7777/ssh-vpn/releases/download/v0.2.0/ssh-vpn-server-linux-amd64
 chmod +x ssh-vpn-server-linux-amd64
 
 # Generate key and start
@@ -51,11 +52,11 @@ echo "ssh-ed25519 AAAA... user@host" > authorized_keys
 sudo ./ssh-vpn-server-linux-amd64
 ```
 
-### Client
+### Client (CLI)
 
 ```bash
 # Download
-wget https://github.com/nnip7777/ssh-vpn/releases/download/v0.1.0/ssh-vpn-client-linux-amd64
+wget https://github.com/nnip7777/ssh-vpn/releases/download/v0.2.0/ssh-vpn-client-linux-amd64
 chmod +x ssh-vpn-client-linux-amd64
 
 # Configure and start
@@ -74,16 +75,37 @@ EOF
 sudo ./ssh-vpn-client-linux-amd64 -config client.yaml
 ```
 
+### Client (GUI)
+
+```bash
+# Download
+wget https://github.com/nnip7777/ssh-vpn/releases/download/v0.2.0/ssh-vpn-gui-linux-amd64
+chmod +x ssh-vpn-gui-linux-amd64
+
+# Start GUI
+./ssh-vpn-gui-linux-amd64 -config client.yaml
+```
+
+GUI features:
+- System tray icon with quick actions
+- Settings panel (server, port, auth, TUN config)
+- Connection status monitoring
+- Auto-update checker
+- Connect/Disconnect buttons
+
 ## Platform Support
 
 | Platform | Architecture | Binary |
 |----------|-------------|--------|
 | Linux (server) | amd64, arm64 | `ssh-vpn-server-linux-*` |
-| macOS (client) | amd64, arm64 | `ssh-vpn-client-macos-*` |
-| Linux (client) | amd64, arm64 | `ssh-vpn-client-linux-*` |
-| Windows (client) | amd64 | `ssh-vpn-client-windows-*.exe` |
-| iOS (client) | arm64 | `SSHVPN.xcframework` |
-| Android (client) | arm64 | `ssh-vpn.aar` |
+| macOS (CLI) | amd64, arm64 | `ssh-vpn-client-macos-*` |
+| Linux (CLI) | amd64, arm64 | `ssh-vpn-client-linux-*` |
+| Windows (CLI) | amd64 | `ssh-vpn-client-windows-*.exe` |
+| macOS (GUI) | amd64, arm64 | `ssh-vpn-gui-macos-*` |
+| Linux (GUI) | amd64, arm64 | `ssh-vpn-gui-linux-*` |
+| Windows (GUI) | amd64 | `ssh-vpn-gui-windows-*.exe` |
+| iOS (mobile) | arm64 | `SSHVPN.xcframework` |
+| Android (mobile) | arm64 | `ssh-vpn.aar` |
 
 ## Building
 
@@ -180,6 +202,13 @@ ssh-vpn-server [flags]
 ### Client
 ```
 ssh-vpn-client [flags]
+  -config string      Config file path (default "client.yaml")
+  -version            Show version
+```
+
+### GUI Client
+```
+ssh-vpn-gui [flags]
   -config string      Config file path (default "client.yaml")
   -version            Show version
 ```

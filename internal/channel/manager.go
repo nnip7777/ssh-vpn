@@ -59,6 +59,9 @@ func NewChannel(id uint16, channelType ChannelType, reader io.ReadCloser, writer
 		State:    StateIdle,
 		Weight:   1.0,
 		logger:   logger,
+		Stats: Stats{
+			LastActivity: time.Now(),
+		},
 	}
 }
 
@@ -124,15 +127,15 @@ func (c *Channel) Close() error {
 func (c *Channel) IsHealthy(timeout time.Duration) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-
 	if c.closed || c.State == StateFailed {
 		return false
 	}
-
+	if c.Stats.PacketsSent == 0 && c.Stats.PacketsRecv == 0 {
+		return true
+	}
 	if time.Since(c.Stats.LastActivity) > timeout {
 		return false
 	}
-
 	return true
 }
 
@@ -170,6 +173,10 @@ type Manager struct {
 	HealthCheck time.Duration
 	Timeout     time.Duration
 	logger      *zap.Logger
+
+	TotalCreated uint64
+	TotalClosed  uint64
+	CreatedAt    time.Time
 }
 
 func NewManager(minRead, maxRead, minWrite, maxWrite int, readRatio, writeRatio float64, healthCheck, timeout time.Duration, logger *zap.Logger) *Manager {
@@ -185,15 +192,17 @@ func NewManager(minRead, maxRead, minWrite, maxWrite int, readRatio, writeRatio 
 		HealthCheck:   healthCheck,
 		Timeout:       timeout,
 		logger:        logger,
+		CreatedAt:     time.Now(),
 	}
 }
 
 func (m *Manager) AddChannel(ch *Channel) {
+	atomic.AddUint64(&m.TotalCreated, 1)
 	switch ch.Type {
 	case ChannelRead:
-		m.writeMu.Lock()
+		m.readMu.Lock()
 		m.ReadChannels = append(m.ReadChannels, ch)
-		m.writeMu.Unlock()
+		m.readMu.Unlock()
 		m.logger.Info("added read channel",
 			zap.Uint16("id", ch.ID),
 			zap.Int("total", len(m.ReadChannels)))
@@ -213,6 +222,7 @@ func (m *Manager) AddChannel(ch *Channel) {
 }
 
 func (m *Manager) RemoveChannel(id uint16) {
+	atomic.AddUint64(&m.TotalClosed, 1)
 	m.readMu.Lock()
 	for i, ch := range m.ReadChannels {
 		if ch.ID == id {
@@ -251,6 +261,15 @@ func (m *Manager) GetNextReadChannel() *Channel {
 	}
 
 	return nil
+}
+
+func (m *Manager) GetReadChannels() []*Channel {
+	m.readMu.RLock()
+	defer m.readMu.RUnlock()
+
+	result := make([]*Channel, len(m.ReadChannels))
+	copy(result, m.ReadChannels)
+	return result
 }
 
 func (m *Manager) GetNextWriteChannel() *Channel {
@@ -333,6 +352,24 @@ func (m *Manager) GetStats() map[uint16]Stats {
 	m.writeMu.RUnlock()
 
 	return stats
+}
+
+func (m *Manager) GetManagerStats() map[string]interface{} {
+	m.readMu.RLock()
+	activeRead := len(m.ReadChannels)
+	m.readMu.RUnlock()
+
+	m.writeMu.RLock()
+	activeWrite := len(m.WriteChannels)
+	m.writeMu.RUnlock()
+
+	return map[string]interface{}{
+		"active_read":   activeRead,
+		"active_write":  activeWrite,
+		"total_created": atomic.LoadUint64(&m.TotalCreated),
+		"total_closed":  atomic.LoadUint64(&m.TotalClosed),
+		"created_at":    m.CreatedAt,
+	}
 }
 
 func (m *Manager) ChannelCount() (read int, write int) {
