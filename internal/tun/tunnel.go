@@ -11,6 +11,24 @@ import (
 	"go.uber.org/zap"
 )
 
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 0, 1600)
+		return &b
+	},
+}
+
+func getBuf() *[]byte {
+	return bufPool.Get().(*[]byte)
+}
+
+func putBuf(b *[]byte) {
+	if cap(*b) <= 1600 {
+		*b = (*b)[:0]
+		bufPool.Put(b)
+	}
+}
+
 type Tunnel struct {
 	iface      *Interface
 	manager    *channel.Manager
@@ -21,8 +39,8 @@ type Tunnel struct {
 	running    bool
 	stopCh     chan struct{}
 
-	toChannels *channel.RingBuffer
-	fromChannels *channel.RingBuffer
+	toChannels   chan []byte
+	fromChannels chan []byte
 }
 
 func NewTunnel(iface *Interface, manager *channel.Manager, compressor compress.Compressor, mtu int, logger *zap.Logger) *Tunnel {
@@ -33,8 +51,8 @@ func NewTunnel(iface *Interface, manager *channel.Manager, compressor compress.C
 		mtu:        mtu,
 		logger:     logger,
 		stopCh:     make(chan struct{}),
-		toChannels: channel.NewRingBuffer(mtu * 100),
-		fromChannels: channel.NewRingBuffer(mtu * 100),
+		toChannels:   make(chan []byte, 2048),
+		fromChannels: make(chan []byte, 2048),
 	}
 }
 
@@ -89,57 +107,46 @@ func (t *Tunnel) readFromTUN() {
 			continue
 		}
 
-		data := make([]byte, n)
-		copy(data, buf[:n])
-		t.toChannels.Write(data)
+		pkt := make([]byte, n)
+		copy(pkt, buf[:n])
+		select {
+		case t.toChannels <- pkt:
+		default:
+		}
 	}
 }
 
 func (t *Tunnel) writeToTUN() {
-	buf := make([]byte, t.mtu+100)
 	for {
 		select {
 		case <-t.stopCh:
 			return
-		default:
-		}
-
-		n, err := t.fromChannels.Read(buf)
-		if err != nil || n == 0 {
-			continue
-		}
-
-		if _, err := t.iface.Write(buf[:n]); err != nil {
-			t.logger.Error("failed to write to TUN", zap.Error(err))
+		case pkt := <-t.fromChannels:
+			if _, err := t.iface.Write(pkt); err != nil {
+				t.logger.Error("failed to write to TUN", zap.Error(err))
+			}
 		}
 	}
 }
 
 func (t *Tunnel) writeToChannels() {
-	buf := make([]byte, t.mtu+100)
 	for {
 		select {
 		case <-t.stopCh:
 			return
-		default:
-		}
+		case pkt := <-t.toChannels:
+			ch := t.manager.GetNextWriteChannel()
+			if ch == nil {
+				time.Sleep(100 * time.Microsecond)
+				continue
+			}
 
-		n, err := t.toChannels.Read(buf)
-		if err != nil || n == 0 {
-			continue
-		}
-
-		ch := t.manager.GetNextWriteChannel()
-		if ch == nil {
-			time.Sleep(time.Millisecond)
-			continue
-		}
-
-		if _, werr := ch.Write(buf[:n]); werr != nil {
-			t.logger.Error("failed to write to channel",
-				zap.Uint16("channel_id", ch.ID),
-				zap.Error(werr))
-			t.manager.RemoveChannel(ch.ID)
+			if _, werr := ch.Write(pkt); werr != nil {
+				t.logger.Error("failed to write to channel",
+					zap.Uint16("channel_id", ch.ID),
+					zap.Error(werr))
+				t.manager.RemoveChannel(ch.ID)
+			}
 		}
 	}
 }
@@ -190,9 +197,12 @@ func (t *Tunnel) readFromChannel(ch *channel.Channel) {
 			continue
 		}
 
-		data := make([]byte, n)
-		copy(data, buf[:n])
-		t.fromChannels.Write(data)
+		pkt := make([]byte, n)
+		copy(pkt, buf[:n])
+		select {
+		case t.fromChannels <- pkt:
+		default:
+		}
 	}
 }
 

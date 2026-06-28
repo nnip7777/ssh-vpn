@@ -188,13 +188,15 @@ type ChannelNegotiator struct {
 	handshake *Handshake
 	manager   *channel.Manager
 	logger    *zap.Logger
+	minWrite  int
 }
 
-func NewChannelNegotiator(handshake *Handshake, manager *channel.Manager, logger *zap.Logger) *ChannelNegotiator {
+func NewChannelNegotiator(handshake *Handshake, manager *channel.Manager, minWrite int, logger *zap.Logger) *ChannelNegotiator {
 	return &ChannelNegotiator{
 		handshake: handshake,
 		manager:   manager,
 		logger:    logger,
+		minWrite:  minWrite,
 	}
 }
 
@@ -289,11 +291,42 @@ func (cn *ChannelNegotiator) checkAndAdjustChannels() {
 	cn.handshake.mu.RLock()
 	targetRatio := cn.handshake.readRatio
 	maxRead := int(cn.handshake.maxChannels)
+	minRead := int(cn.handshake.minChannels)
 	cn.handshake.mu.RUnlock()
 
+	minWrite := cn.minWrite
+	if minWrite < 2 {
+		minWrite = 2
+	}
 	maxWrite := maxRead / 2
-	if maxWrite < 2 {
-		maxWrite = 2
+	if maxWrite < minWrite {
+		maxWrite = minWrite
+	}
+
+	if writeCount < minWrite {
+		cn.logger.Warn("write channels below minimum, creating replacement",
+			zap.Int("current", writeCount),
+			zap.Int("min", minWrite))
+		for writeCount < minWrite {
+			if err := cn.createChannel(channel.ChannelWrite); err != nil {
+				cn.logger.Error("failed to create write channel", zap.Error(err))
+				break
+			}
+			writeCount++
+		}
+	}
+
+	if readCount < minRead {
+		cn.logger.Warn("read channels below minimum, creating replacement",
+			zap.Int("current", readCount),
+			zap.Int("min", minRead))
+		for readCount < minRead {
+			if err := cn.createChannel(channel.ChannelRead); err != nil {
+				cn.logger.Error("failed to create read channel", zap.Error(err))
+				break
+			}
+			readCount++
+		}
 	}
 
 	if totalBytesRead+totalBytesWrite == 0 {

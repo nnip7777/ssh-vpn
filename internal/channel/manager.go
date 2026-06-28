@@ -369,6 +369,8 @@ func (m *Manager) GetManagerStats() map[string]interface{} {
 		"total_created": atomic.LoadUint64(&m.TotalCreated),
 		"total_closed":  atomic.LoadUint64(&m.TotalClosed),
 		"created_at":    m.CreatedAt,
+		"min_read":      m.MinRead,
+		"min_write":     m.MinWrite,
 	}
 }
 

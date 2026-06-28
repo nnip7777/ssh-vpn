@@ -97,7 +97,7 @@ func (r *CompressedReader) Read(p []byte) (int, error) {
 			return 0, err
 		}
 
-		r.len, err = r.compressor.Decompress(p, r.buf[:n])
+		r.len, err = r.compressor.Decompress(r.buf, r.buf[:n])
 		if err != nil {
 			return 0, err
 		}

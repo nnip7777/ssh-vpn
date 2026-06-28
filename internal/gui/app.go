@@ -26,6 +26,7 @@ type App struct {
 	monTotalIn   *canvas.Text
 	monTotalOut  *canvas.Text
 	monChannels  *canvas.Text
+	monStopCh    chan struct{}
 }
 
 type StatusUpdate struct {
@@ -103,6 +104,7 @@ func (a *App) StartClient() {
 	}
 
 	a.client = c
+	a.monStopCh = make(chan struct{})
 	a.statusCh <- StatusUpdate{Connected: true, Running: true}
 	a.logger.Info("client started")
 }
@@ -110,6 +112,11 @@ func (a *App) StartClient() {
 func (a *App) StopClient() {
 	if a.client == nil {
 		return
+	}
+
+	if a.monStopCh != nil {
+		close(a.monStopCh)
+		a.monStopCh = nil
 	}
 
 	a.client.Stop()

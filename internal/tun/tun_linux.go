@@ -26,6 +26,11 @@ type ifReq struct {
 	_     [22]byte
 }
 
+type ifReqMTU struct {
+	Name [ifnameSize]byte
+	MTU  int32
+}
+
 const (
 	IFF_TUN   = 0x0001
 	IFF_NO_PI = 0x1000
@@ -97,6 +102,12 @@ func (t *Interface) configure(cfg Config) error {
 
 	if err := t.setAddr(sockfd, cfg.Addr, cfg.Netmask); err != nil {
 		return err
+	}
+
+	if cfg.MTU > 0 {
+		if err := t.SetMTU(cfg.MTU); err != nil {
+			return err
+		}
 	}
 
 	if err := t.setUp(sockfd); err != nil {
@@ -202,8 +213,9 @@ func (t *Interface) SetMTU(mtu int) error {
 	}
 	defer syscall.Close(sockfd)
 
-	var req ifReq
+	var req ifReqMTU
 	copy(req.Name[:], t.name)
+	req.MTU = int32(mtu)
 
 	// SIOCSIFMTU = 0x8922
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(sockfd), 0x8922, uintptr(unsafe.Pointer(&req)))

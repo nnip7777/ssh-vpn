@@ -223,7 +223,7 @@ func (v *VPNClient) Connect() error {
 
 	v.handshake = handshake
 
-	negotiator := sshtransport.NewChannelNegotiator(handshake, v.channelMgr, v.logger)
+	negotiator := sshtransport.NewChannelNegotiator(handshake, v.channelMgr, v.config.MinWrite, v.logger)
 	if err := negotiator.NegotiateChannels(); err != nil {
 		transport.Close()
 		v.updateStatus("error")
@@ -340,7 +340,7 @@ func (v *VPNClient) reconnect() {
 			continue
 		}
 
-		negotiator := sshtransport.NewChannelNegotiator(handshake, v.channelMgr, v.logger)
+		negotiator := sshtransport.NewChannelNegotiator(handshake, v.channelMgr, v.config.MinWrite, v.logger)
 		if err := negotiator.NegotiateChannels(); err != nil {
 			transport.Close()
 			time.Sleep(time.Duration(i+1) * time.Second)

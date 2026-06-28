@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nnip7777/ssh-vpn/internal/channel"
@@ -33,12 +34,22 @@ func (t *Transport) Connect() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	conn, err := ssh.Dial("tcp", t.serverAddr, t.config)
+	tcpConn, err := net.Dial("tcp", t.serverAddr)
 	if err != nil {
-		return fmt.Errorf("failed to dial SSH server: %w", err)
+		return fmt.Errorf("failed to dial TCP: %w", err)
 	}
 
-	t.conn = conn
+	if tc, ok := tcpConn.(*net.TCPConn); ok {
+		tc.SetNoDelay(true)
+	}
+
+	sshConn, chans, reqs, err := ssh.NewClientConn(tcpConn, t.serverAddr, t.config)
+	if err != nil {
+		tcpConn.Close()
+		return fmt.Errorf("failed to establish SSH connection: %w", err)
+	}
+
+	t.conn = ssh.NewClient(sshConn, chans, reqs)
 	t.logger.Info("connected to SSH server", zap.String("addr", t.serverAddr))
 	return nil
 }
@@ -92,8 +103,8 @@ type Server struct {
 	clients    map[string]*ClientSession
 	mu         sync.RWMutex
 	logger     *zap.Logger
-	toTUN      *channel.RingBuffer
-	fromTUN    *channel.RingBuffer
+	toTUN      chan []byte
+	fromTUN    chan []byte
 	stopCh     chan struct{}
 	running    bool
 }
@@ -102,6 +113,8 @@ type ClientSession struct {
 	conn     *ssh.ServerConn
 	channels map[uint16]ssh.Channel
 	types    map[uint16]string
+	writeCh  chan []byte
+	stopCh   chan struct{}
 	mu       sync.RWMutex
 }
 
@@ -119,8 +132,8 @@ func NewServer(addr string, config *ssh.ServerConfig, manager *channel.Manager, 
 		tunIface: tunIface,
 		clients:  make(map[string]*ClientSession),
 		logger:   logger,
-		toTUN:    channel.NewRingBuffer(1400 * 200),
-		fromTUN:  channel.NewRingBuffer(1400 * 200),
+		toTUN:    make(chan []byte, 2048),
+		fromTUN:  make(chan []byte, 2048),
 		stopCh:   make(chan struct{}),
 	}, nil
 }
@@ -170,68 +183,74 @@ func (s *Server) readFromTUN() {
 			continue
 		}
 
-		s.logger.Debug("TUN read", zap.Int("bytes", n))
-
-		data := make([]byte, n)
-		copy(data, buf[:n])
-		s.fromTUN.Write(data)
+		pkt := make([]byte, n)
+		copy(pkt, buf[:n])
+		select {
+		case s.fromTUN <- pkt:
+		default:
+		}
 	}
 }
 
 func (s *Server) writeToTUN() {
-	buf := make([]byte, 1500)
 	for {
 		select {
 		case <-s.stopCh:
 			return
-		default:
-		}
-
-		n, err := s.toTUN.Read(buf)
-		if err != nil || n == 0 {
-			continue
-		}
-
-		if _, werr := s.tunIface.Write(buf[:n]); werr != nil {
-			s.logger.Error("TUN write error", zap.Error(werr))
+		case pkt := <-s.toTUN:
+			if _, werr := s.tunIface.Write(pkt); werr != nil {
+				s.logger.Error("TUN write error", zap.Error(werr))
+			}
 		}
 	}
 }
 
 func (s *Server) BroadcastToClients() {
-	buf := make([]byte, 1500)
 	for {
 		select {
 		case <-s.stopCh:
 			return
-		default:
+		case pkt := <-s.fromTUN:
+			s.mu.RLock()
+			for _, client := range s.clients {
+				select {
+				case client.writeCh <- pkt:
+				default:
+				}
+			}
+			s.mu.RUnlock()
 		}
+	}
+}
 
-		n, err := s.fromTUN.Read(buf)
-		if err != nil || n == 0 {
-			continue
-		}
+func (s *Server) clientWriter(client *ClientSession) {
+	defer close(client.stopCh)
+	var rrIndex uint64
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case data, ok := <-client.writeCh:
+			if !ok {
+				return
+			}
 
-		data := make([]byte, n)
-		copy(data, buf[:n])
-
-		s.mu.RLock()
-		for _, client := range s.clients {
 			client.mu.RLock()
+			var readChs []ssh.Channel
 			for id, ch := range client.channels {
 				if client.types[id] == "vpn-read" {
-					if _, werr := ch.Write(data); werr != nil {
-						s.logger.Debug("failed to write to client channel",
-							zap.Uint16("channel", id),
-							zap.Error(werr))
-					} else {
-						break
-					}
+					readChs = append(readChs, ch)
+				}
+			}
+			if len(readChs) > 0 {
+				idx := atomic.AddUint64(&rrIndex, 1) % uint64(len(readChs))
+				if _, werr := readChs[idx].Write(data); werr != nil {
+					s.logger.Debug("failed to write to client channel",
+						zap.Error(werr))
 				}
 			}
 			client.mu.RUnlock()
 		}
-		s.mu.RUnlock()
 	}
 }
 
@@ -254,6 +273,10 @@ func (s *Server) Accept() error {
 }
 
 func (s *Server) handleConnection(netConn net.Conn) {
+	if tc, ok := netConn.(*net.TCPConn); ok {
+		tc.SetNoDelay(true)
+	}
+
 	sshConn, chans, reqs, err := ssh.NewServerConn(netConn, s.config)
 	if err != nil {
 		s.logger.Error("failed to establish SSH connection", zap.Error(err))
@@ -267,16 +290,21 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		conn:     sshConn,
 		channels: make(map[uint16]ssh.Channel),
 		types:    make(map[uint16]string),
+		writeCh:  make(chan []byte, 1024),
+		stopCh:   make(chan struct{}),
 	}
 
 	s.mu.Lock()
 	s.clients[sshConn.RemoteAddr().String()] = client
 	s.mu.Unlock()
 
+	go s.clientWriter(client)
+
 	defer func() {
 		s.mu.Lock()
 		delete(s.clients, sshConn.RemoteAddr().String())
 		s.mu.Unlock()
+		close(client.writeCh)
 	}()
 
 	s.logger.Info("client connected",
@@ -360,9 +388,12 @@ func (s *Server) handleChannelData(client *ClientSession, channelID uint16, ch s
 		}
 
 		if n > 0 {
-			data := make([]byte, n)
-			copy(data, buf[:n])
-			s.toTUN.Write(data)
+			pkt := make([]byte, n)
+			copy(pkt, buf[:n])
+			select {
+			case s.toTUN <- pkt:
+			default:
+			}
 		}
 	}
 }

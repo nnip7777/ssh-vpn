@@ -77,13 +77,19 @@ func (a *App) createMonitorTab() fyne.CanvasObject {
 func (a *App) monitorLoop(m *monitorUI) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		a.refreshMonitor(m)
+	for {
+		select {
+		case <-a.monStopCh:
+			return
+		case <-ticker.C:
+			a.refreshMonitor(m)
+		}
 	}
 }
 
 func (a *App) refreshMonitor(m *monitorUI) {
-	if a.client == nil || !a.client.IsConnected() {
+	c := a.client
+	if c == nil || !c.IsConnected() {
 		m.statusLabel.SetText("Disconnected")
 		m.statusLabel.Importance = widget.DangerImportance
 		m.infoLabel.Text = ""
@@ -112,7 +118,7 @@ func (a *App) refreshMonitor(m *monitorUI) {
 		return
 	}
 
-	stats := a.client.GetStats()
+	stats := c.GetStats()
 	if connected, _ := stats["connected"].(bool); !connected {
 		m.statusLabel.SetText("Disconnected")
 		m.statusLabel.Importance = widget.DangerImportance
@@ -124,20 +130,31 @@ func (a *App) refreshMonitor(m *monitorUI) {
 
 	mgrStats, _ := stats["manager_stats"].(map[string]interface{})
 	var activeRead, activeWrite int
+	var totalCreated, totalClosed uint64
 	if mgrStats != nil {
 		activeRead, _ = mgrStats["active_read"].(int)
 		activeWrite, _ = mgrStats["active_write"].(int)
+		totalCreated, _ = mgrStats["total_created"].(uint64)
+		totalClosed, _ = mgrStats["total_closed"].(uint64)
 		ca, _ := mgrStats["created_at"].(time.Time)
 		uptime := ""
 		if !ca.IsZero() {
 			uptime = fmt.Sprintf(" | Up: %s", fmtDur(time.Since(ca)))
 		}
-		m.infoLabel.Text = fmt.Sprintf("R%d/W%d ch%s", activeRead, activeWrite, uptime)
+		lifecycle := ""
+		if totalCreated > 0 || totalClosed > 0 {
+			lifecycle = fmt.Sprintf(" | +%d/-%d", totalCreated, totalClosed)
+		}
+		m.infoLabel.Text = fmt.Sprintf("R%d/W%d ch%s%s", activeRead, activeWrite, uptime, lifecycle)
 		m.infoLabel.Refresh()
 	}
 
 	if a.monChannels != nil {
-		a.monChannels.Text = fmt.Sprintf("R%d / W%d", activeRead, activeWrite)
+		lifecycle := ""
+		if totalCreated > 0 || totalClosed > 0 {
+			lifecycle = fmt.Sprintf(" (+%d/-%d)", totalCreated, totalClosed)
+		}
+		a.monChannels.Text = fmt.Sprintf("R%d / W%d%s", activeRead, activeWrite, lifecycle)
 		a.monChannels.Refresh()
 	}
 
