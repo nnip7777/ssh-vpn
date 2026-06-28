@@ -27,10 +27,14 @@ const (
 )
 
 type Stats struct {
+	Type         ChannelType
 	BytesSent    uint64
 	BytesRecv    uint64
 	PacketsSent  uint64
 	PacketsRecv  uint64
+	Errors       uint64
+	Retransmits  uint64
+	Dropped      uint64
 	Latency      time.Duration
 	PacketLoss   float64
 	LastActivity time.Time
@@ -79,6 +83,9 @@ func (c *Channel) Read(p []byte) (int, error) {
 		atomic.AddUint64(&c.Stats.PacketsRecv, 1)
 		c.Stats.LastActivity = time.Now()
 	}
+	if err != nil && err != io.EOF {
+		atomic.AddUint64(&c.Stats.Errors, 1)
+	}
 	return n, err
 }
 
@@ -95,6 +102,9 @@ func (c *Channel) Write(p []byte) (int, error) {
 		atomic.AddUint64(&c.Stats.BytesSent, uint64(n))
 		atomic.AddUint64(&c.Stats.PacketsSent, 1)
 		c.Stats.LastActivity = time.Now()
+	}
+	if err != nil {
+		atomic.AddUint64(&c.Stats.Errors, 1)
 	}
 	return n, err
 }
@@ -145,6 +155,9 @@ func (c *Channel) GetStats() Stats {
 		BytesRecv:    atomic.LoadUint64(&c.Stats.BytesRecv),
 		PacketsSent:  atomic.LoadUint64(&c.Stats.PacketsSent),
 		PacketsRecv:  atomic.LoadUint64(&c.Stats.PacketsRecv),
+		Errors:       atomic.LoadUint64(&c.Stats.Errors),
+		Retransmits:  atomic.LoadUint64(&c.Stats.Retransmits),
+		Dropped:      atomic.LoadUint64(&c.Stats.Dropped),
 		Latency:      c.Stats.Latency,
 		PacketLoss:   c.Stats.PacketLoss,
 		LastActivity: c.Stats.LastActivity,
@@ -341,13 +354,17 @@ func (m *Manager) GetStats() map[uint16]Stats {
 
 	m.readMu.RLock()
 	for _, ch := range m.ReadChannels {
-		stats[ch.ID] = ch.GetStats()
+		s := ch.GetStats()
+		s.Type = ChannelRead
+		stats[ch.ID] = s
 	}
 	m.readMu.RUnlock()
 
 	m.writeMu.RLock()
 	for _, ch := range m.WriteChannels {
-		stats[ch.ID] = ch.GetStats()
+		s := ch.GetStats()
+		s.Type = ChannelWrite
+		stats[ch.ID] = s
 	}
 	m.writeMu.RUnlock()
 

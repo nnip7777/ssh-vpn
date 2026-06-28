@@ -4,6 +4,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nnip7777/ssh-vpn/internal/channel"
@@ -41,6 +42,9 @@ type Tunnel struct {
 
 	toChannels   chan []byte
 	fromChannels chan []byte
+
+	droppedIn  uint64
+	droppedOut uint64
 }
 
 func NewTunnel(iface *Interface, manager *channel.Manager, compressor compress.Compressor, mtu int, logger *zap.Logger) *Tunnel {
@@ -112,6 +116,7 @@ func (t *Tunnel) readFromTUN() {
 		select {
 		case t.toChannels <- pkt:
 		default:
+			atomic.AddUint64(&t.droppedIn, 1)
 		}
 	}
 }
@@ -137,6 +142,7 @@ func (t *Tunnel) writeToChannels() {
 		case pkt := <-t.toChannels:
 			ch := t.manager.GetNextWriteChannel()
 			if ch == nil {
+				atomic.AddUint64(&t.droppedOut, 1)
 				time.Sleep(100 * time.Microsecond)
 				continue
 			}
@@ -202,6 +208,7 @@ func (t *Tunnel) readFromChannel(ch *channel.Channel) {
 		select {
 		case t.fromChannels <- pkt:
 		default:
+			atomic.AddUint64(&t.droppedOut, 1)
 		}
 	}
 }
@@ -210,6 +217,10 @@ func (t *Tunnel) IsRunning() bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.running
+}
+
+func (t *Tunnel) GetDropped() (in, out uint64) {
+	return atomic.LoadUint64(&t.droppedIn), atomic.LoadUint64(&t.droppedOut)
 }
 
 type TunnelPool struct {

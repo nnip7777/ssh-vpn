@@ -20,7 +20,6 @@ func (a *App) setupUI() {
 
 	dashboardPages := []fyne.CanvasObject{
 		a.createMainDashboard(),
-		a.createMonitorDashboard(),
 		a.createRoutingDashboard(),
 		a.createSettingsDashboard(),
 		a.createDebugDashboard(),
@@ -95,7 +94,7 @@ func (a *App) createHeader() fyne.CanvasObject {
 }
 
 func (a *App) createSidebar(pages []fyne.CanvasObject) fyne.CanvasObject {
-	labels := []string{"Main", "Monitor", "Routing", "Settings", "Debug", "Help"}
+	labels := []string{"Main", "Routing", "Settings", "Debug", "Help"}
 	var buttons []*widget.Button
 
 	for i, label := range labels {
@@ -181,27 +180,27 @@ func (a *App) createStatusBar() fyne.CanvasObject {
 
 func (a *App) createMainDashboard() fyne.CanvasObject {
 	a.mainStatus = canvas.NewText("DISCONNECTED", dangerRed)
-	a.mainStatus.TextSize = 22
+	a.mainStatus.TextSize = 20
 	a.mainStatus.TextStyle = fyne.TextStyle{Bold: true}
 
 	statusTitle := canvas.NewText("CONNECTION STATUS", textGrey)
-	statusTitle.TextSize = 11
+	statusTitle.TextSize = 10
 
 	statusBox := container.NewVBox(statusTitle, a.mainStatus)
 	statusBg := canvas.NewRectangle(darkPanel)
 	statusCard := container.NewStack(statusBg, container.NewPadded(statusBox))
 
 	serverTitle := canvas.NewText("SERVER", textGrey)
-	serverTitle.TextSize = 11
+	serverTitle.TextSize = 10
 	serverVal := canvas.NewText(fmt.Sprintf("%s:%d", a.config.Client.ServerAddr, a.config.Client.ServerPort), neonCyan)
-	serverVal.TextSize = 18
+	serverVal.TextSize = 16
 	serverVal.TextStyle = fyne.TextStyle{Bold: true}
 	serverCard := container.NewStack(canvas.NewRectangle(darkPanel), container.NewPadded(container.NewVBox(serverTitle, serverVal)))
 
 	tunTitle := canvas.NewText("TUN INTERFACE", textGrey)
-	tunTitle.TextSize = 11
+	tunTitle.TextSize = 10
 	tunVal := canvas.NewText(fmt.Sprintf("%s (%s)", a.config.Client.TUNName, a.config.Client.TUNAddr), neonMagenta)
-	tunVal.TextSize = 18
+	tunVal.TextSize = 16
 	tunVal.TextStyle = fyne.TextStyle{Bold: true}
 	tunCard := container.NewStack(canvas.NewRectangle(darkPanel), container.NewPadded(container.NewVBox(tunTitle, tunVal)))
 
@@ -217,46 +216,32 @@ func (a *App) createMainDashboard() fyne.CanvasObject {
 	})
 	disconnectBtn.Importance = widget.DangerImportance
 
-	controlLabel := canvas.NewText("CONTROL INTERFACE", textGrey)
-	controlLabel.TextSize = 11
-
 	buttons := container.NewGridWithColumns(2, connectBtn, disconnectBtn)
-	controlPanel := container.NewVBox(controlLabel, widget.NewSeparator(), buttons)
-	bg := canvas.NewRectangle(darkPanel)
-	panel := container.NewStack(bg, container.NewPadded(controlPanel))
-
-	return container.NewBorder(topRow, nil, nil, nil, panel)
-}
-
-func (a *App) createMonitorDashboard() fyne.CanvasObject {
-	title := canvas.NewText("NETWORK TRAFFIC ANALYTICS", neonCyan)
-	title.TextSize = 16
-	title.TextStyle = fyne.TextStyle{Bold: true}
 
 	a.monTotalIn = canvas.NewText("0 B", neonCyan)
-	a.monTotalIn.TextSize = 14
+	a.monTotalIn.TextSize = 13
 	a.monTotalIn.TextStyle = fyne.TextStyle{Bold: true}
 
 	a.monTotalOut = canvas.NewText("0 B", neonMagenta)
-	a.monTotalOut.TextSize = 14
+	a.monTotalOut.TextSize = 13
 	a.monTotalOut.TextStyle = fyne.TextStyle{Bold: true}
 
 	a.monChannels = canvas.NewText("R0 / W0", neonGreen)
-	a.monChannels.TextSize = 14
+	a.monChannels.TextSize = 13
 	a.monChannels.TextStyle = fyne.TextStyle{Bold: true}
 
-	topBar := container.NewHBox(
-		container.NewHBox(canvas.NewText("IN:", textGrey), a.monTotalIn),
+	trafficBar := container.NewHBox(
+		canvas.NewText("IN:", textGrey), a.monTotalIn,
 		canvas.NewText("  ", nil),
-		container.NewHBox(canvas.NewText("OUT:", textGrey), a.monTotalOut),
+		canvas.NewText("OUT:", textGrey), a.monTotalOut,
 		canvas.NewText("  ", nil),
-		container.NewHBox(canvas.NewText("CH:", textGrey), a.monChannels),
+		canvas.NewText("CH:", textGrey), a.monChannels,
 	)
 
 	channelPanel := NewNeonPanel("CHANNEL STATUS", a.createMonitorTab())
 
 	return container.NewBorder(
-		container.NewVBox(title, widget.NewSeparator(), topBar),
+		container.NewVBox(topRow, buttons, widget.NewSeparator(), trafficBar),
 		nil, nil, nil,
 		channelPanel,
 	)

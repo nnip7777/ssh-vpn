@@ -14,17 +14,21 @@ import (
 	"github.com/nnip7777/ssh-vpn/internal/channel"
 )
 
+const sparklineLen = 40
+
 type monitorUI struct {
-	statusLabel *widget.Label
-	infoLabel   *canvas.Text
-	totalBar    *widget.ProgressBar
 	readBar     *widget.ProgressBar
 	writeBar    *widget.ProgressBar
 	readLabel   *canvas.Text
 	writeLabel  *canvas.Text
 	channelList *fyne.Container
+	sparkLine   *SparkLine
+	sparkLabel  *canvas.Text
+	statsLabel  *canvas.Text
 	prevTotal   uint64
 	prevTime    time.Time
+	sparkData   [sparklineLen]float64
+	sparkIdx    int
 }
 
 type channelSnapshot struct {
@@ -34,43 +38,45 @@ type channelSnapshot struct {
 	bytesOut uint64
 	pktsIn   uint64
 	pktsOut  uint64
+	errors   uint64
 }
 
 func (a *App) createMonitorTab() fyne.CanvasObject {
 	m := &monitorUI{
-		statusLabel: widget.NewLabel("Disconnected"),
-		infoLabel:   canvas.NewText("", textGrey),
-		totalBar:    widget.NewProgressBar(),
 		readBar:     widget.NewProgressBar(),
 		writeBar:    widget.NewProgressBar(),
 		readLabel:   canvas.NewText("READ 0%", neonCyan),
 		writeLabel:  canvas.NewText("WRITE 0%", neonMagenta),
 		channelList: container.NewVBox(),
+		sparkLine:   NewSparkLine(neonCyan, sparklineLen),
+		sparkLabel:  canvas.NewText("0 B/s", neonGreen),
+		statsLabel:  canvas.NewText("ERR:0  RETR:0  DROP_IN:0  DROP_OUT:0", neonGreen),
 		prevTime:    time.Now(),
 	}
 
 	a.monUI = m
-	m.statusLabel.TextStyle = fyne.TextStyle{Bold: true}
-	m.infoLabel.TextSize = 11
-	m.readLabel.TextSize = 11
-	m.writeLabel.TextSize = 11
-
-	topRow := container.NewHBox(m.statusLabel, m.infoLabel)
+	m.readLabel.TextSize = 10
+	m.writeLabel.TextSize = 10
+	m.readLabel.TextStyle = fyne.TextStyle{Bold: true}
+	m.writeLabel.TextStyle = fyne.TextStyle{Bold: true}
+	m.sparkLabel.TextSize = 12
+	m.sparkLabel.TextStyle = fyne.TextStyle{Bold: true}
+	m.statsLabel.TextSize = 11
+	m.statsLabel.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 
 	barRow := container.NewGridWithColumns(2,
 		container.NewHBox(m.readLabel, m.readBar),
 		container.NewHBox(m.writeLabel, m.writeBar),
 	)
 
-	scroll := container.NewVScroll(m.channelList)
-	scroll.SetMinSize(fyne.NewSize(0, 100))
+	sparkRow := container.NewBorder(nil, nil, m.sparkLabel, nil, m.sparkLine)
 
 	go a.monitorLoop(m)
 
 	return container.NewBorder(
-		container.NewVBox(topRow, m.totalBar, barRow),
+		container.NewVBox(barRow, sparkRow, m.statsLabel),
 		nil, nil, nil,
-		scroll,
+		m.channelList,
 	)
 }
 
@@ -90,17 +96,16 @@ func (a *App) monitorLoop(m *monitorUI) {
 func (a *App) refreshMonitor(m *monitorUI) {
 	c := a.client
 	if c == nil || !c.IsConnected() {
-		m.statusLabel.SetText("Disconnected")
-		m.statusLabel.Importance = widget.DangerImportance
-		m.infoLabel.Text = ""
-		m.infoLabel.Refresh()
-		m.totalBar.SetValue(0)
 		m.readBar.SetValue(0)
 		m.writeBar.SetValue(0)
 		m.readLabel.Text = "READ 0%"
 		m.readLabel.Refresh()
 		m.writeLabel.Text = "WRITE 0%"
 		m.writeLabel.Refresh()
+		m.sparkLabel.Text = "0 B/s"
+		m.sparkLabel.Refresh()
+		m.statsLabel.Text = ""
+		m.statsLabel.Refresh()
 		m.channelList.Objects = nil
 		m.channelList.Refresh()
 		if a.monTotalIn != nil {
@@ -120,13 +125,8 @@ func (a *App) refreshMonitor(m *monitorUI) {
 
 	stats := c.GetStats()
 	if connected, _ := stats["connected"].(bool); !connected {
-		m.statusLabel.SetText("Disconnected")
-		m.statusLabel.Importance = widget.DangerImportance
 		return
 	}
-
-	m.statusLabel.SetText("Connected")
-	m.statusLabel.Importance = widget.SuccessImportance
 
 	mgrStats, _ := stats["manager_stats"].(map[string]interface{})
 	var activeRead, activeWrite int
@@ -136,17 +136,6 @@ func (a *App) refreshMonitor(m *monitorUI) {
 		activeWrite, _ = mgrStats["active_write"].(int)
 		totalCreated, _ = mgrStats["total_created"].(uint64)
 		totalClosed, _ = mgrStats["total_closed"].(uint64)
-		ca, _ := mgrStats["created_at"].(time.Time)
-		uptime := ""
-		if !ca.IsZero() {
-			uptime = fmt.Sprintf(" | Up: %s", fmtDur(time.Since(ca)))
-		}
-		lifecycle := ""
-		if totalCreated > 0 || totalClosed > 0 {
-			lifecycle = fmt.Sprintf(" | +%d/-%d", totalCreated, totalClosed)
-		}
-		m.infoLabel.Text = fmt.Sprintf("R%d/W%d ch%s%s", activeRead, activeWrite, uptime, lifecycle)
-		m.infoLabel.Refresh()
 	}
 
 	if a.monChannels != nil {
@@ -161,20 +150,24 @@ func (a *App) refreshMonitor(m *monitorUI) {
 	chStats, ok := stats["channel_stats"].(map[uint16]channel.Stats)
 
 	var tIn, tOut uint64
+	var totalErrors, totalRetransmits uint64
 	var snapshots []channelSnapshot
 
 	if ok {
 		for id, s := range chStats {
 			tIn += s.BytesRecv
 			tOut += s.BytesSent
+			totalErrors += s.Errors
+			totalRetransmits += s.Retransmits
 			chType := "R"
-			if int(id) > activeRead {
+			if s.Type == channel.ChannelWrite {
 				chType = "W"
 			}
 			snapshots = append(snapshots, channelSnapshot{
 				id: id, chType: chType,
 				bytesIn: s.BytesRecv, bytesOut: s.BytesSent,
 				pktsIn: s.PacketsRecv, pktsOut: s.PacketsSent,
+				errors: s.Errors,
 			})
 		}
 	}
@@ -183,8 +176,41 @@ func (a *App) refreshMonitor(m *monitorUI) {
 		return snapshots[i].id < snapshots[j].id
 	})
 
-	m.prevTotal = tIn + tOut
-	m.prevTime = time.Now()
+	now := time.Now()
+	elapsed := now.Sub(m.prevTime).Seconds()
+	if elapsed < 0.5 {
+		elapsed = 1.0
+	}
+	currentTotal := tIn + tOut
+	delta := currentTotal - m.prevTotal
+	if currentTotal < m.prevTotal {
+		delta = 0
+	}
+	throughput := float64(delta) / elapsed
+	m.prevTotal = currentTotal
+	m.prevTime = now
+
+	idx := m.sparkIdx % sparklineLen
+	m.sparkData[idx] = throughput
+	m.sparkIdx++
+
+	var maxSpark float64
+	for _, v := range m.sparkData {
+		if v > maxSpark {
+			maxSpark = v
+		}
+	}
+	m.sparkLine.Push(throughput)
+	m.sparkLine.SetMax(maxSpark)
+
+	m.sparkLabel.Text = fmtThroughput(throughput)
+	m.sparkLabel.Refresh()
+
+	dropIn, _ := stats["dropped_in"].(uint64)
+	dropOut, _ := stats["dropped_out"].(uint64)
+	m.statsLabel.Text = fmt.Sprintf("ERR:%d  RETR:%d  DROP_IN:%d  DROP_OUT:%d",
+		totalErrors, totalRetransmits, dropIn, dropOut)
+	m.statsLabel.Refresh()
 
 	if a.monTotalIn != nil {
 		a.monTotalIn.Text = fmtBytes(tIn)
@@ -208,7 +234,6 @@ func (a *App) refreshMonitor(m *monitorUI) {
 	if totalAll > 0 {
 		rPct := readLoad / totalAll
 		wPct := writeLoad / totalAll
-		m.totalBar.SetValue(1.0)
 		m.readBar.SetValue(rPct)
 		m.writeBar.SetValue(wPct)
 		m.readLabel.Text = fmt.Sprintf("READ %.0f%%", rPct*100)
@@ -216,7 +241,6 @@ func (a *App) refreshMonitor(m *monitorUI) {
 		m.writeLabel.Text = fmt.Sprintf("WRITE %.0f%%", wPct*100)
 		m.writeLabel.Refresh()
 	} else {
-		m.totalBar.SetValue(0)
 		m.readBar.SetValue(0)
 		m.writeBar.SetValue(0)
 	}
@@ -256,6 +280,24 @@ func (a *App) refreshMonitor(m *monitorUI) {
 	m.channelList.Refresh()
 }
 
+func fmtThroughput(bps float64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+	)
+	switch {
+	case bps >= GB:
+		return fmt.Sprintf("%.1f GB/s", bps/float64(GB))
+	case bps >= MB:
+		return fmt.Sprintf("%.1f MB/s", bps/float64(MB))
+	case bps >= KB:
+		return fmt.Sprintf("%.1f KB/s", bps/float64(KB))
+	default:
+		return fmt.Sprintf("%.0f B/s", bps)
+	}
+}
+
 func (a *App) makeChannelCompact(snap channelSnapshot, totalAll uint64, accent color.Color) fyne.CanvasObject {
 	var util float64
 	if totalAll > 0 {
@@ -266,15 +308,19 @@ func (a *App) makeChannelCompact(snap channelSnapshot, totalAll uint64, accent c
 	bar.SetValue(util / 100)
 
 	idText := canvas.NewText(fmt.Sprintf("#%02d %s", snap.id, snap.chType), accent)
-	idText.TextSize = 11
+	idText.TextSize = 10
 	idText.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 
+	errStr := ""
+	if snap.errors > 0 {
+		errStr = fmt.Sprintf(" E:%d", snap.errors)
+	}
 	trafficText := canvas.NewText(
-		fmt.Sprintf("IN:%s OUT:%s %d/%d",
+		fmt.Sprintf("IN:%s OUT:%s %d/%d%s",
 			fmtBytes(snap.bytesIn), fmtBytes(snap.bytesOut),
-			snap.pktsIn, snap.pktsOut),
+			snap.pktsIn, snap.pktsOut, errStr),
 		textGrey)
-	trafficText.TextSize = 10
+	trafficText.TextSize = 9
 
 	top := container.NewHBox(idText, trafficText)
 	return container.NewVBox(top, bar)

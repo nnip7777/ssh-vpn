@@ -1,0 +1,318 @@
+package client
+
+import (
+	"fmt"
+	"net"
+	"sync"
+	"time"
+
+	"github.com/nnip7777/ssh-vpn/internal/balancer"
+	"github.com/nnip7777/ssh-vpn/internal/channel"
+	"github.com/nnip7777/ssh-vpn/internal/compress"
+	"github.com/nnip7777/ssh-vpn/internal/config"
+	sshtransport "github.com/nnip7777/ssh-vpn/internal/ssh"
+	"github.com/nnip7777/ssh-vpn/internal/tun"
+	"go.uber.org/zap"
+)
+
+type Client struct {
+	config       *config.Config
+	sshConfig    *sshtransport.ClientConfig
+	transport    *sshtransport.Transport
+	handshake    *sshtransport.Handshake
+	channelMgr   *channel.Manager
+	balancer     *balancer.Balancer
+	tunIface     *tun.Interface
+	tunnel       *tun.Tunnel
+	compressor   compress.Compressor
+	routeManager *tun.RouteManager
+	logger       *zap.Logger
+	mu           sync.RWMutex
+	running      bool
+	stopCh       chan struct{}
+}
+
+func New(cfg *config.Config, logger *zap.Logger) (*Client, error) {
+	sshCfg := &sshtransport.ClientConfig{
+		ServerAddr:     fmt.Sprintf("%s:%d", cfg.Client.ServerAddr, cfg.Client.ServerPort),
+		Username:       cfg.Client.Username,
+		Password:       cfg.Client.Password,
+		PrivateKeyPath: cfg.Client.PrivateKeyPath,
+	}
+
+	var comp compress.Compressor
+	var err error
+	switch cfg.Security.Compression {
+	case "lz4":
+		comp, err = compress.NewLZ4Compressor(logger)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create compressor: %w", err)
+		}
+	default:
+		comp = compress.NewNoopCompressor()
+	}
+
+	channelMgr := channel.NewManager(
+		cfg.Channels.MinRead,
+		cfg.Channels.MaxRead,
+		cfg.Channels.MinWrite,
+		cfg.Channels.MaxWrite,
+		cfg.Channels.ReadRatio,
+		cfg.Channels.WriteRatio,
+		cfg.Channels.HealthCheck,
+		cfg.Channels.Timeout,
+		logger,
+	)
+
+	tunIface, err := tun.New(tun.Config{
+		Name:    cfg.Client.TUNName,
+		Addr:    cfg.Client.TUNAddr,
+		Peer:    computePeerAddr(cfg.Client.TUNAddr),
+		Netmask: cfg.Client.TUNNetmask,
+		MTU:     cfg.Client.MTU,
+	}, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create TUN interface: %w", err)
+	}
+
+	bal := balancer.NewBalancer(channelMgr, balancer.StrategyWeightedRoundRobin, logger)
+
+	tunnel := tun.NewTunnel(tunIface, channelMgr, comp, cfg.Client.MTU, logger)
+
+	routeSubnet := fmt.Sprintf("%s/24", cfg.Client.TUNAddr)
+	routeManager := tun.NewRouteManager(
+		tunIface.Name(),
+		routeSubnet,
+		cfg.Client.ServerAddr,
+		logger,
+	)
+
+	return &Client{
+		config:       cfg,
+		sshConfig:    sshCfg,
+		channelMgr:   channelMgr,
+		balancer:     bal,
+		tunIface:     tunIface,
+		tunnel:       tunnel,
+		compressor:   comp,
+		routeManager: routeManager,
+		logger:       logger,
+		stopCh:       make(chan struct{}),
+	}, nil
+}
+
+func (c *Client) Connect() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.logger.Info("connecting to server",
+		zap.String("addr", fmt.Sprintf("%s:%d", c.config.Client.ServerAddr, c.config.Client.ServerPort)))
+
+	sshCfg, err := sshtransport.NewSSHClientConfig(c.sshConfig, c.logger)
+	if err != nil {
+		return fmt.Errorf("failed to create SSH client config: %w", err)
+	}
+
+	transport := sshtransport.NewTransport(
+		fmt.Sprintf("%s:%d", c.config.Client.ServerAddr, c.config.Client.ServerPort),
+		sshCfg,
+		c.logger,
+	)
+
+	if err := transport.Connect(); err != nil {
+		return fmt.Errorf("failed to connect: %w", err)
+	}
+
+	c.transport = transport
+
+	handshake := sshtransport.NewClientHandshake(transport.GetConnection(), c.logger)
+	handshake.SetChannelRatios(c.config.Channels.ReadRatio, c.config.Channels.WriteRatio)
+	handshake.SetChannelLimits(uint32(c.config.Channels.MinRead), uint32(c.config.Channels.MaxRead))
+
+	if err := handshake.DoClientHandshake(); err != nil {
+		transport.Close()
+		return fmt.Errorf("handshake failed: %w", err)
+	}
+
+	c.handshake = handshake
+
+	negotiator := sshtransport.NewChannelNegotiator(handshake, c.channelMgr, c.config.Channels.MinWrite, c.logger)
+	if err := negotiator.NegotiateChannels(); err != nil {
+		transport.Close()
+		return fmt.Errorf("channel negotiation failed: %w", err)
+	}
+
+	go negotiator.MonitorChannels(c.config.Channels.HealthCheck)
+
+	c.logger.Info("connected to server")
+	return nil
+}
+
+func (c *Client) Start() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.running {
+		return fmt.Errorf("client already running")
+	}
+
+	c.running = true
+
+	if c.routeManager != nil {
+		if err := c.routeManager.SaveAndSetup(); err != nil {
+			c.logger.Warn("route setup failed", zap.Error(err))
+		}
+	}
+
+	if err := c.tunnel.Start(); err != nil {
+		return fmt.Errorf("failed to start tunnel: %w", err)
+	}
+
+	go c.monitorConnection()
+
+	c.logger.Info("client started")
+	return nil
+}
+
+func (c *Client) monitorConnection() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case <-ticker.C:
+			c.checkConnection()
+		}
+	}
+}
+
+func (c *Client) checkConnection() {
+	c.mu.RLock()
+	running := c.running
+	transport := c.transport
+	c.mu.RUnlock()
+
+	if !running {
+		return
+	}
+
+	if transport != nil && !transport.IsConnected() {
+		c.logger.Warn("connection lost, attempting to reconnect")
+		c.reconnect()
+	}
+}
+
+func (c *Client) reconnect() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.transport != nil {
+		c.transport.Close()
+	}
+
+	for i := 0; i < 5; i++ {
+		c.logger.Info("attempting to reconnect",
+			zap.Int("attempt", i+1))
+
+		sshCfg, err := sshtransport.NewSSHClientConfig(c.sshConfig, c.logger)
+		if err != nil {
+			c.logger.Warn("failed to create SSH config for reconnect", zap.Error(err))
+			time.Sleep(time.Duration(i+1) * time.Second)
+			continue
+		}
+
+		transport := sshtransport.NewTransport(
+			fmt.Sprintf("%s:%d", c.config.Client.ServerAddr, c.config.Client.ServerPort),
+			sshCfg,
+			c.logger,
+		)
+
+		if err := transport.Connect(); err != nil {
+			c.logger.Warn("reconnect failed", zap.Error(err))
+			time.Sleep(time.Duration(i+1) * time.Second)
+			continue
+		}
+
+		c.transport = transport
+		c.logger.Info("reconnected successfully")
+		return
+	}
+
+	c.logger.Error("failed to reconnect after 5 attempts")
+	c.Stop()
+}
+
+func (c *Client) Stop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.running {
+		return
+	}
+
+	c.running = false
+	close(c.stopCh)
+
+	if c.tunnel != nil {
+		c.tunnel.Stop()
+	}
+
+	if c.transport != nil {
+		c.transport.Close()
+	}
+
+	if c.routeManager != nil {
+		c.routeManager.Restore()
+	}
+
+	if c.tunIface != nil {
+		c.tunIface.Close()
+	}
+
+	c.logger.Info("client stopped")
+}
+
+func (c *Client) GetStats() map[string]interface{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	stats := make(map[string]interface{})
+
+	if c.channelMgr != nil {
+		channelStats := c.channelMgr.GetStats()
+		readCount, writeCount := c.channelMgr.ChannelCount()
+		stats["read_channels"] = readCount
+		stats["write_channels"] = writeCount
+		stats["channel_stats"] = channelStats
+		stats["manager_stats"] = c.channelMgr.GetManagerStats()
+	}
+
+	if c.tunnel != nil {
+		dropIn, dropOut := c.tunnel.GetDropped()
+		stats["dropped_in"] = dropIn
+		stats["dropped_out"] = dropOut
+	}
+
+	stats["running"] = c.running
+	stats["connected"] = c.transport != nil && c.transport.IsConnected()
+
+	return stats
+}
+
+func (c *Client) IsConnected() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.transport != nil && c.transport.IsConnected()
+}
+
+func computePeerAddr(addr string) string {
+	parts := net.ParseIP(addr).To4()
+	if parts == nil {
+		return addr
+	}
+	parts[3] = 1
+	return parts.String()
+}
