@@ -43,12 +43,12 @@ func (u *Updater) CheckForUpdates(window fyne.Window) {
 				fmt.Sprintf("New version %s is available.\nCurrent version: %s\n\nOpen download page?",
 					release.TagName, u.currentVersion),
 				func(ok bool) {
-			if ok {
-					u, _ := url.Parse(release.HTMLURL)
-					if u != nil {
-						fyne.CurrentApp().OpenURL(u)
+					if ok {
+						u, _ := url.Parse(release.HTMLURL)
+						if u != nil {
+							fyne.CurrentApp().OpenURL(u)
+						}
 					}
-				}
 				}, window)
 		} else {
 			dialog.ShowInformation("Update Check", "You are running the latest version", window)

@@ -3,6 +3,7 @@ package gui
 import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"github.com/nnip7777/ssh-vpn/internal/client"
 	"github.com/nnip7777/ssh-vpn/internal/config"
 	"github.com/nnip7777/ssh-vpn/internal/version"
@@ -20,18 +21,24 @@ type App struct {
 	statusCh     chan StatusUpdate
 	routingState *RoutingState
 	monUI        *monitorUI
+	contentTabs  *fyne.Container
+	mainStatus   *canvas.Text
+	monTotalIn   *canvas.Text
+	monTotalOut  *canvas.Text
+	monChannels  *canvas.Text
 }
 
 type StatusUpdate struct {
-	Connected   bool
-	Running     bool
-	Error       string
+	Connected bool
+	Running   bool
+	Error     string
 }
 
 func New(cfg *config.Config, logger *zap.Logger) *App {
-	fyneApp := app.New()
+	fyneApp := app.NewWithID("com.sshvpn.client")
+	fyneApp.Settings().SetTheme(&NeonTheme{})
 	mainWin := fyneApp.NewWindow("SSH VPN Client")
-	mainWin.Resize(fyne.NewSize(500, 400))
+	mainWin.Resize(fyne.NewSize(900, 600))
 
 	a := &App{
 		fyneApp:  fyneApp,
@@ -53,8 +60,9 @@ func New(cfg *config.Config, logger *zap.Logger) *App {
 
 func (a *App) Run() {
 	a.setupUI()
-	a.tray.Setup()
-	a.mainWin.ShowAndRun()
+	a.mainWin.Show()
+	go a.tray.Setup()
+	a.fyneApp.Run()
 }
 
 func (a *App) GetVersion() string {

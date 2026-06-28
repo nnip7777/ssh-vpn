@@ -8,15 +8,15 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 )
 
 type AppInfo struct {
 	Name string
 	PID  int
-	Icon string
+	Type string
 }
 
 type RoutingMode int
@@ -24,46 +24,76 @@ type RoutingMode int
 const (
 	RoutingModeFull RoutingMode = iota
 	RoutingModePerApp
-	RoutingModeSplit
 )
 
 type RoutingState struct {
-	Mode         RoutingMode
-	SelectedApps map[string]bool
+	Mode            RoutingMode
+	SelectedApps    map[string]bool
 	ExcludedSubnets []string
-	mu           sync.RWMutex
+	mu              sync.RWMutex
+}
+
+var systemServices = map[string]bool{
+	"kernel_task": true, "launchd": true, "WindowServer": true,
+	"systemstats": true, "distnoted": true, "cfprefsd": true,
+	"CoreServicesD": true, "launchservicesd": true, "backupd": true,
+	"mds": true, "mds_stores": true, "spotlight": true,
+	"photoanalysisd": true, "photolibraryd": true,
+	"nsurlsessiond": true, "nsurlstoraged": true,
+	"softwareupdated": true, "installd": true,
+	"securityd": true, "ccsd": true, "trustd": true,
+	"cloudd": true, "fmfd": true, "familycircled": true,
+	"accountsd": true, "identityservicesd": true,
+	"commcenter": true, "TelephonyUtilities": true,
+	"mDNSResponder": true, "dnsproxyd": true,
+	"syslogd": true, "os_log": true,
+	"ActivityMonitor": true, "System Information": true,
+	"QuickLookUIService": true, "UserEventAgent": true,
+	"coreaudiod": true, "audioredhookd": true,
+	"diskarbitrationd": true, "diskmanagementd": true,
+	"powerd": true, "thermalmonitord": true,
+	"configd": true, "networkd": true,
+	"iapd": true, "iaphelper": true,
 }
 
 func (a *App) createRoutingTab() fyne.CanvasObject {
-	titleLabel := widget.NewLabel("VPN Routing Mode")
+	modeLabel := canvas.NewText("Current mode: Full Tunnel (all traffic)", textGrey)
+	modeLabel.TextSize = 12
 
-	modeLabel := widget.NewLabel("Current mode: Full Tunnel")
-
-	fullRadio := widget.NewRadioGroup([]string{"Full Tunnel (all traffic)", "Per-App (selected apps only)"}, func(value string) {
+	fullRadio := widget.NewRadioGroup([]string{"Full Tunnel", "Per-App (selected apps only)"}, func(value string) {
 		if strings.HasPrefix(value, "Full") {
 			a.routingState.mu.Lock()
 			a.routingState.Mode = RoutingModeFull
 			a.routingState.mu.Unlock()
-			modeLabel.SetText("Current mode: Full Tunnel")
+			modeLabel.Text = "Current mode: Full Tunnel (all traffic)"
+			modeLabel.Color = textGrey
+			modeLabel.Refresh()
 		} else {
 			a.routingState.mu.Lock()
 			a.routingState.Mode = RoutingModePerApp
 			a.routingState.mu.Unlock()
-			modeLabel.SetText("Current mode: Per-App")
+			modeLabel.Text = "Current mode: Per-App (checked = VPN)"
+			modeLabel.Color = neonCyan
+			modeLabel.Refresh()
 		}
 	})
-	fullRadio.SetSelected("Full Tunnel (all traffic)")
+	fullRadio.SetSelected("Full Tunnel")
 
-	appListContainer := container.NewVBox()
-	appScroll := container.NewVScroll(appListContainer)
+	systemList := container.NewVBox()
+	userList := container.NewVBox()
+	systemScroll := container.NewVScroll(systemList)
+	systemScroll.SetMinSize(fyne.NewSize(0, 120))
+	userScroll := container.NewVScroll(userList)
+	userScroll.SetMinSize(fyne.NewSize(0, 200))
 
-	refreshBtn := widget.NewButton("Refresh Apps", func() {
-		a.refreshAppList(appListContainer)
+	refreshBtn := widget.NewButton("Refresh", func() {
+		a.refreshAppList(systemList, userList)
 	})
 
-	go a.autoRefreshApps(appListContainer)
+	go a.autoRefreshApps(systemList, userList)
 
-	statusLabel := widget.NewLabel("")
+	statusLabel := canvas.NewText("", textGrey)
+	statusLabel.TextSize = 11
 
 	applyBtn := widget.NewButton("Apply Routing", func() {
 		a.routingState.mu.RLock()
@@ -72,35 +102,61 @@ func (a *App) createRoutingTab() fyne.CanvasObject {
 
 		if mode == RoutingModePerApp {
 			count := a.getSelectedAppCount()
-			statusLabel.SetText(fmt.Sprintf("Per-App mode: %d apps selected for VPN routing", count))
+			statusLabel.Text = fmt.Sprintf("%d apps → VPN", count)
+			statusLabel.Color = neonGreen
 		} else {
-			statusLabel.SetText("Full Tunnel mode: all traffic routed through VPN")
+			statusLabel.Text = "All traffic → VPN"
+			statusLabel.Color = neonGreen
 		}
+		statusLabel.Refresh()
 	})
+	applyBtn.Importance = widget.HighImportance
 
-	return container.NewVBox(
-		titleLabel,
+	hint := canvas.NewText("✓ = VPN tunnel   ·   unchecked = direct", textGrey)
+	hint.TextSize = 10
+
+	sysTitle := canvas.NewText("SYSTEM SERVICES", textGrey)
+	sysTitle.TextSize = 11
+	sysTitle.TextStyle = fyne.TextStyle{Bold: true}
+
+	userTitle := canvas.NewText("APPLICATIONS", neonCyan)
+	userTitle.TextSize = 11
+	userTitle.TextStyle = fyne.TextStyle{Bold: true}
+
+	topPanel := container.NewVBox(
 		modeLabel,
 		fullRadio,
 		widget.NewSeparator(),
-		widget.NewLabel("Running Applications:"),
-		container.NewGridWithColumns(2, refreshBtn, layout.NewSpacer()),
-		appScroll,
+		hint,
+		container.NewBorder(nil, nil, nil, refreshBtn, widget.NewLabel("")),
 		widget.NewSeparator(),
-		applyBtn,
-		statusLabel,
-		layout.NewSpacer(),
+	)
+
+	sysSection := container.NewVBox(sysTitle, systemScroll)
+	userSection := container.NewVBox(userTitle, userScroll)
+
+	bottomBar := container.NewBorder(nil, nil, applyBtn, statusLabel)
+
+	listArea := container.NewVBox(sysSection, widget.NewSeparator(), userSection)
+
+	return container.NewBorder(
+		topPanel,
+		bottomBar,
+		nil, nil,
+		listArea,
 	)
 }
 
-func (a *App) refreshAppList(list *fyne.Container) {
+func (a *App) refreshAppList(systemList, userList *fyne.Container) {
 	apps := getRunningApps()
 
-	list.Objects = nil
+	systemList.Objects = nil
+	userList.Objects = nil
 
 	if len(apps) == 0 {
-		list.Objects = append(list.Objects, widget.NewLabel("No applications found"))
-		list.Refresh()
+		userList.Objects = append(userList.Objects, widget.NewLabel("No applications found"))
+		userList.Refresh()
+		systemList.Refresh()
 		return
 	}
 
@@ -118,15 +174,23 @@ func (a *App) refreshAppList(list *fyne.Container) {
 		}
 		a.routingState.mu.RUnlock()
 
-		pidLabel := widget.NewLabel(fmt.Sprintf("PID: %d", app.PID))
-		row := container.NewHBox(check, layout.NewSpacer(), pidLabel)
-		list.Objects = append(list.Objects, row)
+		pidLabel := canvas.NewText(fmt.Sprintf("PID:%d", app.PID), textGrey)
+		pidLabel.TextSize = 10
+
+		row := container.NewBorder(nil, nil, check, pidLabel)
+
+		if app.Type == "system" {
+			systemList.Objects = append(systemList.Objects, row)
+		} else {
+			userList.Objects = append(userList.Objects, row)
+		}
 	}
 
-	list.Refresh()
+	systemList.Refresh()
+	userList.Refresh()
 }
 
-func (a *App) autoRefreshApps(list *fyne.Container) {
+func (a *App) autoRefreshApps(systemList, userList *fyne.Container) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -136,7 +200,7 @@ func (a *App) autoRefreshApps(list *fyne.Container) {
 			mode := a.routingState.Mode
 			a.routingState.mu.RUnlock()
 			if mode == RoutingModePerApp {
-				a.refreshAppList(list)
+				a.refreshAppList(systemList, userList)
 			}
 		}
 	}
@@ -178,7 +242,7 @@ func getRunningApps() []AppInfo {
 
 		name := extractAppName(cmd)
 		if name == "" || name == "ps" || name == "grep" || name == "bash" || name == "zsh" ||
-			name == "ssh" || name == "kernel_task" || name == "launchd" {
+			name == "ssh" {
 			continue
 		}
 
@@ -187,9 +251,15 @@ func getRunningApps() []AppInfo {
 		}
 		seen[name] = true
 
+		appType := "user"
+		if systemServices[name] {
+			appType = "system"
+		}
+
 		apps = append(apps, AppInfo{
 			Name: name,
 			PID:  pid,
+			Type: appType,
 		})
 	}
 

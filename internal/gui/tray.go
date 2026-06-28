@@ -1,6 +1,8 @@
 package gui
 
 import (
+	"time"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/driver/desktop"
 )
@@ -14,9 +16,11 @@ func NewTray(app *App) *Tray {
 }
 
 func (t *Tray) Setup() {
+	time.Sleep(500 * time.Millisecond)
+
 	desk, ok := t.app.fyneApp.(desktop.App)
 	if !ok {
-		t.app.logger.Warn("system tray not available - desktop.App interface not implemented")
+		t.app.logger.Warn("system tray not available - type assertion to desktop.App failed")
 		return
 	}
 
@@ -42,7 +46,7 @@ func (t *Tray) Setup() {
 	)
 
 	desk.SetSystemTrayMenu(menu)
-	t.app.logger.Info("system tray menu set")
+	t.app.logger.Info("system tray menu set successfully")
 }
 
 func (t *Tray) onExit() {

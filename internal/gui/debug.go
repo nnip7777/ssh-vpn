@@ -84,10 +84,10 @@ func (a *App) collectDebugInfo() string {
 			sb.WriteString(fmt.Sprintf("Write channels: %d\n", wc))
 		}
 		if cs, ok := stats["channel_stats"].(map[uint16]struct {
-			BytesSent    uint64
-			BytesRecv    uint64
-			PacketsSent  uint64
-			PacketsRecv  uint64
+			BytesSent   uint64
+			BytesRecv   uint64
+			PacketsSent uint64
+			PacketsRecv uint64
 		}); ok {
 			var totalIn, totalOut uint64
 			for _, s := range cs {
