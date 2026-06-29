@@ -2,7 +2,7 @@
 
 [![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](https://github.com/nnip7777/ssh-vpn/releases)
 [![Go](https://img.shields.io/badge/go-1.22+-00ADD8.svg)](https://go.dev/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20iOS%20%7C%20Android-lightgrey.svg)](#platform-support)
 
 Multi-channel VPN with load balancing and fault tolerance over SSH.
