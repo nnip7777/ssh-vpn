@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nnip7777/ssh-vpn/internal/balancer"
 	"github.com/nnip7777/ssh-vpn/internal/channel"
 	"github.com/nnip7777/ssh-vpn/internal/compress"
 	"go.uber.org/zap"
@@ -33,6 +34,7 @@ func putBuf(b *[]byte) {
 type Tunnel struct {
 	iface      *Interface
 	manager    *channel.Manager
+	balancer   *balancer.Balancer
 	compressor compress.Compressor
 	mtu        int
 	logger     *zap.Logger
@@ -48,9 +50,11 @@ type Tunnel struct {
 }
 
 func NewTunnel(iface *Interface, manager *channel.Manager, compressor compress.Compressor, mtu int, logger *zap.Logger) *Tunnel {
+	bal := balancer.NewBalancer(manager, balancer.StrategyWeightedRoundRobin, logger)
 	return &Tunnel{
 		iface:      iface,
 		manager:    manager,
+		balancer:   bal,
 		compressor: compressor,
 		mtu:        mtu,
 		logger:     logger,
@@ -91,7 +95,6 @@ func (t *Tunnel) Stop() {
 }
 
 func (t *Tunnel) readFromTUN() {
-	buf := make([]byte, t.mtu+100)
 	for {
 		select {
 		case <-t.stopCh:
@@ -99,8 +102,11 @@ func (t *Tunnel) readFromTUN() {
 		default:
 		}
 
+		bufp := getBuf()
+		buf := (*bufp)[:t.mtu+100]
 		n, err := t.iface.Read(buf)
 		if err != nil {
+			putBuf(bufp)
 			if err != io.EOF {
 				t.logger.Error("failed to read from TUN", zap.Error(err))
 			}
@@ -108,11 +114,13 @@ func (t *Tunnel) readFromTUN() {
 		}
 
 		if n == 0 {
+			putBuf(bufp)
 			continue
 		}
 
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
+		putBuf(bufp)
 		select {
 		case t.toChannels <- pkt:
 		default:
@@ -140,19 +148,11 @@ func (t *Tunnel) writeToChannels() {
 		case <-t.stopCh:
 			return
 		case pkt := <-t.toChannels:
-			ch := t.manager.GetNextWriteChannel()
-			if ch == nil {
+			n, err := t.balancer.Write(pkt)
+			if err != nil {
 				atomic.AddUint64(&t.droppedOut, 1)
-				time.Sleep(100 * time.Microsecond)
-				continue
 			}
-
-			if _, werr := ch.Write(pkt); werr != nil {
-				t.logger.Error("failed to write to channel",
-					zap.Uint16("channel_id", ch.ID),
-					zap.Error(werr))
-				t.manager.RemoveChannel(ch.ID)
-			}
+			_ = n
 		}
 	}
 }
@@ -187,10 +187,12 @@ func (t *Tunnel) readFromChannels() {
 }
 
 func (t *Tunnel) readFromChannel(ch *channel.Channel) {
-	buf := make([]byte, t.mtu+100)
 	for {
+		bufp := getBuf()
+		buf := (*bufp)[:t.mtu+100]
 		n, err := ch.Read(buf)
 		if err != nil {
+			putBuf(bufp)
 			if err != io.EOF {
 				t.logger.Error("failed to read from channel",
 					zap.Uint16("channel_id", ch.ID),
@@ -200,11 +202,13 @@ func (t *Tunnel) readFromChannel(ch *channel.Channel) {
 		}
 
 		if n == 0 {
+			putBuf(bufp)
 			continue
 		}
 
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
+		putBuf(bufp)
 		select {
 		case t.fromChannels <- pkt:
 		default:

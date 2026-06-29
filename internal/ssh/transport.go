@@ -14,6 +14,24 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+var serverBufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 0, 1600)
+		return &b
+	},
+}
+
+func serverGetBuf() *[]byte {
+	return serverBufPool.Get().(*[]byte)
+}
+
+func serverPutBuf(b *[]byte) {
+	if cap(*b) <= 1600 {
+		*b = (*b)[:0]
+		serverBufPool.Put(b)
+	}
+}
+
 type Transport struct {
 	config     *ssh.ClientConfig
 	serverAddr string
@@ -110,12 +128,14 @@ type Server struct {
 }
 
 type ClientSession struct {
-	conn     *ssh.ServerConn
-	channels map[uint16]ssh.Channel
-	types    map[uint16]string
-	writeCh  chan []byte
-	stopCh   chan struct{}
-	mu       sync.RWMutex
+	conn       *ssh.ServerConn
+	channels   map[uint16]ssh.Channel
+	types      map[uint16]string
+	writeCh    chan []byte
+	stopCh     chan struct{}
+	readChs    []ssh.Channel
+	channelsVer int
+	mu         sync.RWMutex
 }
 
 func NewServer(addr string, config *ssh.ServerConfig, manager *channel.Manager, tunIface *tun.Interface, logger *zap.Logger) (*Server, error) {
@@ -163,7 +183,6 @@ func (s *Server) Stop() {
 }
 
 func (s *Server) readFromTUN() {
-	buf := make([]byte, 1500)
 	for {
 		select {
 		case <-s.stopCh:
@@ -171,8 +190,11 @@ func (s *Server) readFromTUN() {
 		default:
 		}
 
+		bufp := serverGetBuf()
+		buf := (*bufp)[:1500]
 		n, err := s.tunIface.Read(buf)
 		if err != nil {
+			serverPutBuf(bufp)
 			if err != io.EOF {
 				s.logger.Error("TUN read error", zap.Error(err))
 			}
@@ -180,11 +202,13 @@ func (s *Server) readFromTUN() {
 		}
 
 		if n == 0 {
+			serverPutBuf(bufp)
 			continue
 		}
 
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
+		serverPutBuf(bufp)
 		select {
 		case s.fromTUN <- pkt:
 		default:
@@ -226,6 +250,7 @@ func (s *Server) BroadcastToClients() {
 func (s *Server) clientWriter(client *ClientSession) {
 	defer close(client.stopCh)
 	var rrIndex uint64
+	var lastVer int
 	for {
 		select {
 		case <-s.stopCh:
@@ -236,12 +261,19 @@ func (s *Server) clientWriter(client *ClientSession) {
 			}
 
 			client.mu.RLock()
-			var readChs []ssh.Channel
-			for id, ch := range client.channels {
-				if client.types[id] == "vpn-read" {
-					readChs = append(readChs, ch)
+			ver := len(client.channels)
+			if ver != lastVer {
+				client.readChs = client.readChs[:0]
+				for id, ch := range client.channels {
+					if client.types[id] == "vpn-read" {
+						client.readChs = append(client.readChs, ch)
+					}
 				}
+				lastVer = ver
 			}
+			readChs := client.readChs
+			client.mu.RUnlock()
+
 			if len(readChs) > 0 {
 				idx := atomic.AddUint64(&rrIndex, 1) % uint64(len(readChs))
 				if _, werr := readChs[idx].Write(data); werr != nil {
@@ -249,7 +281,6 @@ func (s *Server) clientWriter(client *ClientSession) {
 						zap.Error(werr))
 				}
 			}
-			client.mu.RUnlock()
 		}
 	}
 }
@@ -336,6 +367,7 @@ func (s *Server) handleChannel(client *ClientSession, newChan ssh.NewChannel) {
 	client.mu.Lock()
 	client.channels[id] = ch
 	client.types[id] = channelType
+	client.readChs = nil
 	client.mu.Unlock()
 
 	s.logger.Info("new channel opened",
@@ -369,16 +401,19 @@ func (s *Server) handleChannelData(client *ClientSession, channelID uint16, ch s
 	defer func() {
 		client.mu.Lock()
 		delete(client.channels, channelID)
+		client.readChs = nil
 		client.mu.Unlock()
 		ch.Close()
 	}()
 
 	s.logger.Info("channel data handler started", zap.Uint16("channel", channelID))
 
-	buf := make([]byte, 32*1024)
 	for {
+		bufp := serverGetBuf()
+		buf := (*bufp)[:32*1024]
 		n, err := ch.Read(buf)
 		if err != nil {
+			serverPutBuf(bufp)
 			if err != io.EOF {
 				s.logger.Error("channel read error",
 					zap.Error(err),
@@ -390,6 +425,7 @@ func (s *Server) handleChannelData(client *ClientSession, channelID uint16, ch s
 		if n > 0 {
 			pkt := make([]byte, n)
 			copy(pkt, buf[:n])
+			serverPutBuf(bufp)
 			select {
 			case s.toTUN <- pkt:
 			default:
