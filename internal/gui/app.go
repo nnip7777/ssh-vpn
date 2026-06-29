@@ -1,6 +1,8 @@
 package gui
 
 import (
+	"fmt"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
@@ -11,22 +13,24 @@ import (
 )
 
 type App struct {
-	fyneApp      fyne.App
-	mainWin      fyne.Window
-	tray         *Tray
-	updater      *Updater
-	client       *client.Client
-	config       *config.Config
-	logger       *zap.Logger
-	statusCh     chan StatusUpdate
-	routingState *RoutingState
-	monUI        *monitorUI
-	contentTabs  *fyne.Container
-	mainStatus   *canvas.Text
-	monTotalIn   *canvas.Text
-	monTotalOut  *canvas.Text
-	monChannels  *canvas.Text
-	monStopCh    chan struct{}
+	fyneApp       fyne.App
+	mainWin       fyne.Window
+	tray          *Tray
+	updater       *Updater
+	client        *client.Client
+	config        *config.Config
+	logger        *zap.Logger
+	statusCh      chan StatusUpdate
+	routingState  *RoutingState
+	monUI         *monitorUI
+	logManager    *LogManager
+	throttle      *ThrottleDetector
+	contentTabs   *fyne.Container
+	mainStatus    *canvas.Text
+	monTotalIn    *canvas.Text
+	monTotalOut   *canvas.Text
+	monChannels   *canvas.Text
+	monStopCh     chan struct{}
 }
 
 type StatusUpdate struct {
@@ -51,6 +55,7 @@ func New(cfg *config.Config, logger *zap.Logger) *App {
 			Mode:         RoutingModeFull,
 			SelectedApps: make(map[string]bool),
 		},
+		throttle: NewThrottleDetector(),
 	}
 
 	a.tray = NewTray(a)
@@ -84,21 +89,28 @@ func (a *App) StartClient() {
 		return
 	}
 
+	a.LogInfo("CONNECT", "Client", "Initializing client connection...")
+
 	c, err := client.New(a.config, a.logger)
 	if err != nil {
 		a.logger.Error("failed to create client", zap.Error(err))
+		a.LogError("CONNECT", "Client", fmt.Sprintf("Failed to create client: %v", err))
 		a.statusCh <- StatusUpdate{Error: err.Error()}
 		return
 	}
 
+	a.LogInfo("CONNECT", "Client", "Connecting to server...")
 	if err := c.Connect(); err != nil {
 		a.logger.Error("failed to connect", zap.Error(err))
+		a.LogError("CONNECT", "Client", fmt.Sprintf("Connection failed: %v", err))
 		a.statusCh <- StatusUpdate{Error: err.Error()}
 		return
 	}
 
+	a.LogInfo("CONNECT", "Client", "Starting tunnel...")
 	if err := c.Start(); err != nil {
 		a.logger.Error("failed to start", zap.Error(err))
+		a.LogError("CONNECT", "Client", fmt.Sprintf("Start failed: %v", err))
 		a.statusCh <- StatusUpdate{Error: err.Error()}
 		return
 	}
@@ -106,6 +118,7 @@ func (a *App) StartClient() {
 	a.client = c
 	a.monStopCh = make(chan struct{})
 	a.statusCh <- StatusUpdate{Connected: true, Running: true}
+	a.LogSuccess("CONNECT", "Client", "Client started successfully")
 	a.logger.Info("client started")
 }
 
@@ -113,6 +126,8 @@ func (a *App) StopClient() {
 	if a.client == nil {
 		return
 	}
+
+	a.LogInfo("DISCONNECT", "Client", "Stopping client...")
 
 	if a.monStopCh != nil {
 		close(a.monStopCh)
@@ -122,5 +137,6 @@ func (a *App) StopClient() {
 	a.client.Stop()
 	a.client = nil
 	a.statusCh <- StatusUpdate{Connected: false, Running: false}
+	a.LogSuccess("DISCONNECT", "Client", "Client stopped")
 	a.logger.Info("client stopped")
 }

@@ -17,18 +17,20 @@ import (
 const sparklineLen = 40
 
 type monitorUI struct {
-	readBar     *widget.ProgressBar
-	writeBar    *widget.ProgressBar
-	readLabel   *canvas.Text
-	writeLabel  *canvas.Text
-	channelList *fyne.Container
-	sparkLine   *SparkLine
-	sparkLabel  *canvas.Text
-	statsLabel  *canvas.Text
-	prevTotal   uint64
-	prevTime    time.Time
-	sparkData   [sparklineLen]float64
-	sparkIdx    int
+	readBar       *widget.ProgressBar
+	writeBar      *widget.ProgressBar
+	readLabel     *canvas.Text
+	writeLabel    *canvas.Text
+	channelList   *fyne.Container
+	sparkLine     *SparkLine
+	sparkLabel    *canvas.Text
+	statsLabel    *canvas.Text
+	throttleLabel *canvas.Text
+	prevTotal     uint64
+	prevTime      time.Time
+	sparkData     [sparklineLen]float64
+	sparkIdx      int
+	prevStats     map[uint16]channelSnapshot
 }
 
 type channelSnapshot struct {
@@ -43,15 +45,17 @@ type channelSnapshot struct {
 
 func (a *App) createMonitorTab() fyne.CanvasObject {
 	m := &monitorUI{
-		readBar:     widget.NewProgressBar(),
-		writeBar:    widget.NewProgressBar(),
-		readLabel:   canvas.NewText("READ 0%", neonCyan),
-		writeLabel:  canvas.NewText("WRITE 0%", neonMagenta),
-		channelList: container.NewVBox(),
-		sparkLine:   NewSparkLine(neonCyan, sparklineLen),
-		sparkLabel:  canvas.NewText("0 B/s", neonGreen),
-		statsLabel:  canvas.NewText("ERR:0  RETR:0  DROP_IN:0  DROP_OUT:0", neonGreen),
-		prevTime:    time.Now(),
+		readBar:       widget.NewProgressBar(),
+		writeBar:      widget.NewProgressBar(),
+		readLabel:     canvas.NewText("READ 0%", neonCyan),
+		writeLabel:    canvas.NewText("WRITE 0%", neonMagenta),
+		channelList:   container.NewVBox(),
+		sparkLine:     NewSparkLine(neonCyan, sparklineLen),
+		sparkLabel:    canvas.NewText("0 B/s", neonGreen),
+		statsLabel:    canvas.NewText("ERR:0  RETR:0  DROP_IN:0  DROP_OUT:0", neonGreen),
+		throttleLabel: canvas.NewText("THROTTLE: NONE", neonGreen),
+		prevTime:      time.Now(),
+		prevStats:     make(map[uint16]channelSnapshot),
 	}
 
 	a.monUI = m
@@ -63,6 +67,8 @@ func (a *App) createMonitorTab() fyne.CanvasObject {
 	m.sparkLabel.TextStyle = fyne.TextStyle{Bold: true}
 	m.statsLabel.TextSize = 11
 	m.statsLabel.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	m.throttleLabel.TextSize = 11
+	m.throttleLabel.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 
 	barRow := container.NewGridWithColumns(2,
 		container.NewHBox(m.readLabel, m.readBar),
@@ -74,7 +80,7 @@ func (a *App) createMonitorTab() fyne.CanvasObject {
 	go a.monitorLoop(m)
 
 	return container.NewBorder(
-		container.NewVBox(barRow, sparkRow, m.statsLabel),
+		container.NewVBox(barRow, sparkRow, m.statsLabel, m.throttleLabel),
 		nil, nil, nil,
 		m.channelList,
 	)
@@ -106,6 +112,9 @@ func (a *App) refreshMonitor(m *monitorUI) {
 		m.sparkLabel.Refresh()
 		m.statsLabel.Text = ""
 		m.statsLabel.Refresh()
+		m.throttleLabel.Text = "THROTTLE: NONE"
+		m.throttleLabel.Color = neonGreen
+		m.throttleLabel.Refresh()
 		m.channelList.Objects = nil
 		m.channelList.Refresh()
 		if a.monTotalIn != nil {
@@ -176,6 +185,25 @@ func (a *App) refreshMonitor(m *monitorUI) {
 		return snapshots[i].id < snapshots[j].id
 	})
 
+	if a.throttle != nil && ok {
+		for id, s := range chStats {
+			events := a.throttle.Analyze(id, s.BytesSent, s.BytesRecv, s.Errors, s.Latency)
+			for _, e := range events {
+				a.LogWarn("THROTTLE", fmt.Sprintf("CH#%d", e.ChannelID),
+					fmt.Sprintf("[%s] %s (%.0f→%.0f B/s)", e.Level, e.Reason, e.Before, e.After))
+			}
+		}
+		overall := a.throttle.GetOverallLevel()
+		if overall > ThrottleNone {
+			m.throttleLabel.Text = fmt.Sprintf("THROTTLE: %s", overall)
+			m.throttleLabel.Color = dangerRed
+		} else {
+			m.throttleLabel.Text = "THROTTLE: NONE"
+			m.throttleLabel.Color = neonGreen
+		}
+		m.throttleLabel.Refresh()
+	}
+
 	now := time.Now()
 	elapsed := now.Sub(m.prevTime).Seconds()
 	if elapsed < 0.5 {
@@ -200,7 +228,12 @@ func (a *App) refreshMonitor(m *monitorUI) {
 			maxSpark = v
 		}
 	}
-	m.sparkLine.Push(throughput)
+
+	isWarn := false
+	if a.throttle != nil {
+		isWarn = a.throttle.GetOverallLevel() > ThrottleNone
+	}
+	m.sparkLine.PushWithWarning(throughput, isWarn)
 	m.sparkLine.SetMax(maxSpark)
 
 	m.sparkLabel.Text = fmtThroughput(throughput)

@@ -1,11 +1,26 @@
 # SSH VPN
 
-[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://github.com/nnip7777/ssh-vpn/releases)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](https://github.com/nnip7777/ssh-vpn/releases)
 [![Go](https://img.shields.io/badge/go-1.22+-00ADD8.svg)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20iOS%20%7C%20Android-lightgrey.svg)](#platform-support)
 
 Multi-channel VPN with load balancing and fault tolerance over SSH.
+
+![GUI Screenshot](pics/gui-screenshot.png)
+
+## Why SSH VPN?
+
+Standard VPNs (WireGuard, OpenVPN) use a single connection. ISPs can identify and throttle VPN traffic by DPI. SSH VPN uses multiple SSH channels — a protocol that ISPs cannot block without disrupting developers, sysadmins, and businesses worldwide.
+
+**Key advantages:**
+- **ISP throttling resistance** — multiple parallel channels distribute traffic, reducing the impact of per-connection throttling
+- **Undetectable** — standard SSH protocol, indistinguishable from normal SSH sessions
+- **No exotic protocols** — SSH is used globally; blocking it is impractical for ISPs
+- **Multi-channel load balancing** — weighted round-robin across read/write channels
+- **Real-time monitoring** — GUI dashboard with throughput, per-channel stats, and throttle detection
+
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -15,12 +30,14 @@ Multi-channel VPN with load balancing and fault tolerance over SSH.
 │  Client                                                  │
 │  ┌─────────┐    ┌──────────────────────────────────┐   │
 │  │   TUN   │◄──►│   Channel Manager (Read/Write)    │   │
-│  └─────────┘    │   Load Balancer + Fault Tolerance │   │
+│  └─────────┘    │   Weighted Round-Robin Balancer   │   │
+│                 │   Auto-scaling + Fault Tolerance   │   │
 │                 └───────────────┬──────────────────┘   │
 │                                 │ SSH (AES-256-GCM)     │
-│  Server                         │                       │
+│  Server                         │ × N channels          │
 │  ┌──────────────────────────────▼──────────────────┐   │
 │  │   SSH Server → Channel Manager → TUN Interface  │   │
+│  │   Per-client routing + NAT + MSS clamping       │   │
 │  └─────────────────────────────────────────────────┘   │
 │                                                          │
 └─────────────────────────────────────────────────────────┘
@@ -28,14 +45,45 @@ Multi-channel VPN with load balancing and fault tolerance over SSH.
 
 ## Features
 
-- **Multi-Channel**: Multiple SSH connections per client
-- **Load Balancing**: Weighted round-robin across channels
-- **Fault Tolerance**: Automatic failover on channel failure
-- **Read/Write Split**: 80/20 bandwidth allocation (configurable)
-- **Compression**: LZ4 compression for bandwidth savings
-- **Cross-Platform**: Linux, macOS, Windows, iOS, Android
-- **Encrypted**: AES-256-GCM via SSH protocol
-- **GUI Client**: System tray, settings, auto-update (macOS, Linux, Windows)
+### Multi-Channel VPN
+- Multiple SSH connections per client with independent channels
+- Read channels (80%) and Write channels (20%) — configurable ratio
+- Weighted round-robin load balancing across channels
+- Dynamic channel scaling based on traffic patterns
+- Automatic failover when channels become unhealthy
+
+### ISP Throttling Resistance
+- Parallel channels distribute traffic across multiple SSH connections
+- Per-channel throughput monitoring with anomaly detection
+- Throttle detection: throughput drops, error spikes, latency spikes
+- Visual indicators in GUI (sparkline turns red during throttling)
+
+### Real-Time Monitoring (GUI)
+- Connection status dashboard with server/TUN info
+- Throughput sparkline (MB/s) with per-bar throttling indicators
+- Per-channel stats: bytes in/out, packets, errors, retransmits
+- Error counters: ERR, RETR, DROP_IN, DROP_OUT
+- Throttle level display: NONE / MILD / MODERATE / SEVERE
+- Channel lifecycle tracking (+created/-closed)
+
+### Event Logging
+- Structured JSON logs with rotation (10MB/file, 7 files max)
+- Server, client CLI, and GUI all write to log files
+- Periodic stats dumps (every 30s): throughput, channels, errors
+- Log levels: INFO, WARN, ERROR, DEBUG, OK
+- Old logs auto-rotated by date
+
+### Security
+- AES-256-GCM encryption via SSH protocol
+- LZ4 compression for bandwidth optimization
+- Host key authentication
+- Per-client isolation on server
+
+### Cross-Platform
+- Server: Linux (amd64, arm64)
+- Client CLI: Linux, macOS, Windows
+- Client GUI: Linux, macOS, Windows (Fyne v2, native look)
+- Mobile: iOS (Swift), Android (Kotlin)
 
 ## Quick Start
 
@@ -43,12 +91,16 @@ Multi-channel VPN with load balancing and fault tolerance over SSH.
 
 ```bash
 # Download
-wget https://github.com/nnip7777/ssh-vpn/releases/download/v0.2.0/ssh-vpn-server-linux-amd64
+wget https://github.com/nnip7777/ssh-vpn/releases/download/v0.4.0/ssh-vpn-server-linux-amd64
 chmod +x ssh-vpn-server-linux-amd64
 
-# Generate key and start
+# Generate host key
 ./ssh-vpn-server-linux-amd64 -generate-key
+
+# Add authorized key
 echo "ssh-ed25519 AAAA... user@host" > authorized_keys
+
+# Start
 sudo ./ssh-vpn-server-linux-amd64
 ```
 
@@ -56,85 +108,77 @@ sudo ./ssh-vpn-server-linux-amd64
 
 ```bash
 # Download
-wget https://github.com/nnip7777/ssh-vpn/releases/download/v0.2.0/ssh-vpn-client-linux-amd64
-chmod +x ssh-vpn-client-linux-amd64
+wget https://github.com/nnip7777/ssh-vpn/releases/download/v0.4.0/ssh-vpn-client-macos-amd64
+chmod +x ssh-vpn-client-macos-amd64
 
-# Configure and start
+# Configure
 cat > client.yaml << 'EOF'
 client:
   server_addr: "your-server.com"
   server_port: 2222
   username: "vpnuser"
   private_key_path: "~/.ssh/id_rsa"
+  tun_name: "utun5"
+  tun_addr: "10.8.0.2"
 channels:
-  min_read: 2
+  min_read: 4
   max_read: 8
+  min_write: 2
+  max_write: 4
   read_ratio: 0.8
   write_ratio: 0.2
 EOF
-sudo ./ssh-vpn-client-linux-amd64 -config client.yaml
+
+# Start
+sudo ./ssh-vpn-client-macos-amd64 -config client.yaml
 ```
 
 ### Client (GUI)
 
 ```bash
 # Download
-wget https://github.com/nnip7777/ssh-vpn/releases/download/v0.2.0/ssh-vpn-gui-linux-amd64
-chmod +x ssh-vpn-gui-linux-amd64
+wget https://github.com/nnip7777/ssh-vpn/releases/download/v0.4.0/ssh-vpn-gui-macos-amd64
+chmod +x ssh-vpn-gui-macos-amd64
 
-# Start GUI
-./ssh-vpn-gui-linux-amd64 -config client.yaml
+# Start
+./ssh-vpn-gui-macos-amd64 -config client.yaml
 ```
 
-GUI features:
-- System tray icon with quick actions
-- Settings panel (server, port, auth, TUN config)
-- Connection status monitoring
-- Auto-update checker
-- Connect/Disconnect buttons
+## GUI Dashboard
 
-## Platform Support
+The GUI client provides a cyberpunk-styled dashboard with:
 
-| Platform | Architecture | Binary |
-|----------|-------------|--------|
-| Linux (server) | amd64, arm64 | `ssh-vpn-server-linux-*` |
-| macOS (CLI) | amd64, arm64 | `ssh-vpn-client-macos-*` |
-| Linux (CLI) | amd64, arm64 | `ssh-vpn-client-linux-*` |
-| Windows (CLI) | amd64 | `ssh-vpn-client-windows-*.exe` |
-| macOS (GUI) | amd64, arm64 | `ssh-vpn-gui-macos-*` |
-| Linux (GUI) | amd64, arm64 | `ssh-vpn-gui-linux-*` |
-| Windows (GUI) | amd64 | `ssh-vpn-gui-windows-*.exe` |
-| iOS (mobile) | arm64 | `SSHVPN.xcframework` |
-| Android (mobile) | arm64 | `ssh-vpn.aar` |
-
-## Building
-
-```bash
-# All platforms
-./build_all.sh
-
-# Individual
-./build_ios.sh      # iOS framework
-./build_android.sh  # Android AAR
-```
+| Tab | Features |
+|-----|----------|
+| **Main** | Connection status, server/TUN info, connect/disconnect, throughput sparkline, channel status |
+| **Log** | Event log table with filtering, search, font size control, copy/save to file |
+| **Routing** | Full/Per-App routing mode, application selection |
+| **Settings** | Server, port, auth, TUN config, auto-connect |
+| **Debug** | Network diagnostics, system info collection |
 
 ## Configuration
-
-See [docs/CONFIG.md](docs/CONFIG.md) for complete configuration reference.
 
 ### Server Config
 
 ```yaml
 server:
+  listen_addr: "0.0.0.0"
   listen_port: 2222
   max_clients: 100
   tun_name: "ssh-vpn0"
-  tun_addr: "10.0.0.1"
+  tun_addr: "10.8.0.1"
+  tun_netmask: "255.255.255.0"
+  mtu: 1280
+
 channels:
   min_read: 2
   max_read: 8
+  min_write: 1
+  max_write: 4
   read_ratio: 0.8
   write_ratio: 0.2
+  health_check: 5s
+  timeout: 30s
 ```
 
 ### Client Config
@@ -144,49 +188,55 @@ client:
   server_addr: "your-server.com"
   server_port: 2222
   username: "vpnuser"
+  password: ""
   private_key_path: "~/.ssh/id_rsa"
+  tun_name: "utun5"
+  tun_addr: "10.8.0.2"
+  tun_netmask: "255.255.255.0"
+  mtu: 1280
+  auto_connect: true
+
 channels:
-  min_read: 2
+  min_read: 4
   max_read: 8
+  min_write: 2
+  max_write: 4
   read_ratio: 0.8
   write_ratio: 0.2
+  health_check: 5s
+  timeout: 30s
+
+security:
+  encryption: "aes256-gcm"
+  compression: "lz4"
 ```
 
-## Documentation
+## Platform Support
 
-| Document | Description |
-|----------|-------------|
-| [Configuration](docs/CONFIG.md) | Complete config reference |
-| [Deployment](docs/DEPLOYMENT.md) | Production deployment guide |
-| [Architecture](docs/ARCHITECTURE.md) | System architecture |
-| [Protocol](docs/PROTOCOL.md) | Wire protocol specification |
-| [Mobile](docs/MOBILE.md) | iOS/Android integration |
-| [Troubleshooting](docs/TROUBLESHOOTING.md) | Common issues and fixes |
-| [Security](docs/SECURITY.md) | Security best practices |
+| Platform | Architecture | Binary |
+|----------|-------------|--------|
+| Linux (server) | amd64, arm64 | `ssh-vpn-server-linux-*` |
+| Linux (CLI) | amd64, arm64 | `ssh-vpn-client-linux-*` |
+| macOS (CLI) | amd64, arm64 | `ssh-vpn-client-macos-*` |
+| Windows (CLI) | amd64 | `ssh-vpn-client-windows-*.exe` |
+| Linux (GUI) | amd64, arm64 | `ssh-vpn-gui-linux-*` |
+| macOS (GUI) | amd64, arm64 | `ssh-vpn-gui-macos-*` |
+| Windows (GUI) | amd64 | `ssh-vpn-gui-windows-*.exe` |
+| iOS | arm64 | `SSHVPN.xcframework` |
+| Android | arm64 | `ssh-vpn.aar` |
 
-## Interactive Configurator
-
-Generate client config interactively:
+## Building
 
 ```bash
-# Build configurator
-go build -o ssh-vpn-config ./cmd/configurator
+# All platforms
+./build_all.sh
 
-# Run
-./ssh-vpn-config
-```
-
-```
-╔══════════════════════════════════════════╗
-║       SSH VPN Client Configurator       ║
-╚══════════════════════════════════════════╝
-
-[1] Server address: your-server.com
-[2] Server port: 2222
-[3] Username: vpnuser
-[4] Authentication: [1] Key [2] Password
-[5] Key path: ~/.ssh/id_rsa
-[6] Channel mode: [1] Home [2] Office [3] Mobile [4] Custom
+# Individual
+go build -o server ./cmd/server
+go build -o client ./cmd/client
+go build -o ssh-vpn-gui ./cmd/guiclient
+./build_ios.sh      # iOS framework
+./build_android.sh  # Android AAR
 ```
 
 ## CLI Flags
@@ -203,6 +253,7 @@ ssh-vpn-server [flags]
 ```
 ssh-vpn-client [flags]
   -config string      Config file path (default "client.yaml")
+  -log string         Log level: debug, info, warn, error (default "info")
   -version            Show version
 ```
 
@@ -213,14 +264,16 @@ ssh-vpn-gui [flags]
   -version            Show version
 ```
 
-## Architecture
+## How It Works
 
-- **Channels**: Read (80%) and Write (20%) channels with weighted round-robin
-- **Health Check**: 5s intervals, 30s timeout
-- **Failover**: Automatic channel replacement on failure
-- **Compression**: LZ4 for bandwidth optimization
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
+1. **Connection**: Client establishes SSH connection to server
+2. **Channel Negotiation**: Client opens N read channels + M write channels
+3. **TUN Setup**: Both sides create TUN interfaces and configure routing
+4. **Data Flow**: 
+   - Client → Server: TUN → write channels (weighted round-robin) → SSH → server TUN
+   - Server → Client: server TUN → read channels → SSH → client TUN
+5. **Monitoring**: Channel health checked every 5s, unhealthy channels replaced
+6. **Auto-scaling**: Dynamic channel creation/removal based on traffic patterns
 
 ## License
 

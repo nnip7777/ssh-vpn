@@ -8,6 +8,7 @@ import (
 
 	"github.com/nnip7777/ssh-vpn/internal/config"
 	"github.com/nnip7777/ssh-vpn/internal/gui"
+	"github.com/nnip7777/ssh-vpn/internal/logutil"
 	"github.com/nnip7777/ssh-vpn/internal/version"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -23,8 +24,9 @@ func main() {
 		return
 	}
 
-	logger := initLogger()
+	logger, logWriter := logutil.NewLogger("log", "ssh-vpn-gui", zapcore.InfoLevel)
 	defer logger.Sync()
+	defer logWriter.Close()
 
 	logger.Info("starting", zap.String("version", version.Short()))
 
@@ -50,17 +52,4 @@ func main() {
 	}()
 
 	a.Run()
-}
-
-func initLogger() *zap.Logger {
-	cfg := zap.NewProductionConfig()
-	cfg.EncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
-	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-
-	logger, err := cfg.Build()
-	if err != nil {
-		panic(err)
-	}
-
-	return logger
 }

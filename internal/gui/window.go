@@ -20,6 +20,7 @@ func (a *App) setupUI() {
 
 	dashboardPages := []fyne.CanvasObject{
 		a.createMainDashboard(),
+		a.createLogDashboard(),
 		a.createRoutingDashboard(),
 		a.createSettingsDashboard(),
 		a.createDebugDashboard(),
@@ -43,12 +44,16 @@ func (a *App) setupUI() {
 	a.mainWin.SetContent(root)
 
 	a.switchTab(0, dashboardPages)
+	a.initLogging()
 	go a.statusUpdater()
 
 	a.mainWin.SetCloseIntercept(func() {
 		dialog.ShowConfirm("Quit", "Stop VPN and quit?", func(ok bool) {
 			if ok {
 				a.StopClient()
+				if a.logManager != nil {
+					a.logManager.Close()
+				}
 				a.fyneApp.Quit()
 			}
 		}, a.mainWin)
@@ -94,7 +99,7 @@ func (a *App) createHeader() fyne.CanvasObject {
 }
 
 func (a *App) createSidebar(pages []fyne.CanvasObject) fyne.CanvasObject {
-	labels := []string{"Main", "Routing", "Settings", "Debug", "Help"}
+	labels := []string{"Main", "Log", "Routing", "Settings", "Debug", "Help"}
 	var buttons []*widget.Button
 
 	for i, label := range labels {

@@ -10,34 +10,43 @@ import (
 
 type SparkLine struct {
 	widget.BaseWidget
-	data    []float64
-	cap     int
-	head    int
-	count   int
-	color   color.Color
-	max     float64
-	bg      *canvas.Rectangle
-	barPool []*canvas.Rectangle
+	data      []float64
+	warnings  []bool
+	cap       int
+	head      int
+	count     int
+	color     color.Color
+	warnColor color.Color
+	max       float64
+	bg        *canvas.Rectangle
+	barPool   []*canvas.Rectangle
 }
 
 func NewSparkLine(clr color.Color, size int) *SparkLine {
 	s := &SparkLine{
-		data:  make([]float64, size),
-		cap:   size,
-		color: clr,
-		max:   1,
+		data:      make([]float64, size),
+		warnings:  make([]bool, size),
+		cap:       size,
+		color:     clr,
+		warnColor: color.NRGBA{R: 160, G: 60, B: 60, A: 255},
+		max:       1,
 	}
 	s.ExtendBaseWidget(s)
 	return s
 }
 
-func (s *SparkLine) Push(val float64) {
+func (s *SparkLine) PushWithWarning(val float64, warn bool) {
 	s.data[s.head] = val
+	s.warnings[s.head] = warn
 	s.head = (s.head + 1) % s.cap
 	if s.count < s.cap {
 		s.count++
 	}
 	s.Refresh()
+}
+
+func (s *SparkLine) Push(val float64) {
+	s.PushWithWarning(val, false)
 }
 
 func (s *SparkLine) SetMax(maxVal float64) {
@@ -92,7 +101,11 @@ func (r *sparkRenderer) Layout(size fyne.Size) {
 			h = 1
 		}
 		bar := r.parent.barPool[i]
-		bar.FillColor = r.parent.color
+		if r.parent.warnings[dataIdx] {
+			bar.FillColor = r.parent.warnColor
+		} else {
+			bar.FillColor = r.parent.color
+		}
 		bar.Resize(fyne.NewSize(float32(barW), float32(h)))
 		bar.Move(fyne.NewPos(float32(float64(i)*(barW+gap)), float32(size.Height)-float32(h)))
 		bar.Refresh()
