@@ -152,7 +152,7 @@ The GUI client provides a cyberpunk-styled dashboard with:
 |-----|----------|
 | **Main** | Connection status, server/TUN info, connect/disconnect, throughput sparkline, channel status |
 | **Log** | Event log table with filtering, search, font size control, copy/save to file |
-| **Routing** | Full/Per-App routing mode, application selection |
+| **Routing** | Full/Per-App routing mode, application selection, selective traffic routing |
 | **Settings** | Server, port, auth, TUN config, auto-connect |
 | **Debug** | Network diagnostics, system info collection |
 
@@ -181,7 +181,14 @@ channels:
   timeout: 30s
 ```
 
-### Client Config
+### Routing
+
+The GUI client supports two routing modes:
+
+- **Full** — all traffic goes through VPN
+- **Per-App** — select specific applications to route through VPN, everything else goes through direct connection
+
+Per-App routing allows you to route only specific apps (e.g., browser, Telegram) through the VPN while keeping other traffic on your regular connection. This is useful for bypassing ISP throttling on specific services without affecting all traffic.
 
 ```yaml
 client:
