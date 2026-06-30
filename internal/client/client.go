@@ -144,6 +144,8 @@ func (c *Client) Connect() error {
 
 	go negotiator.MonitorChannels(c.config.Channels.HealthCheck)
 
+	transport.StartKeepalive(15 * time.Second)
+
 	c.logger.Info("connected to server")
 	return nil
 }
@@ -208,9 +210,17 @@ func (c *Client) reconnect() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.logger.Warn("connection lost, attempting to reconnect")
+
+	if c.tunnel != nil {
+		c.tunnel.Stop()
+	}
+
 	if c.transport != nil {
 		c.transport.Close()
 	}
+
+	c.channelMgr.CloseAll()
 
 	for i := 0; i < 5; i++ {
 		c.logger.Info("attempting to reconnect",
@@ -219,7 +229,9 @@ func (c *Client) reconnect() {
 		sshCfg, err := sshtransport.NewSSHClientConfig(c.sshConfig, c.logger)
 		if err != nil {
 			c.logger.Warn("failed to create SSH config for reconnect", zap.Error(err))
-			time.Sleep(time.Duration(i+1) * time.Second)
+			if i >= 3 {
+				time.Sleep(time.Duration(i-2) * time.Second)
+			}
 			continue
 		}
 
@@ -231,11 +243,52 @@ func (c *Client) reconnect() {
 
 		if err := transport.Connect(); err != nil {
 			c.logger.Warn("reconnect failed", zap.Error(err))
-			time.Sleep(time.Duration(i+1) * time.Second)
+			if i >= 3 {
+				time.Sleep(time.Duration(i-2) * time.Second)
+			}
 			continue
 		}
 
+		handshake := sshtransport.NewClientHandshake(transport.GetConnection(), c.logger)
+		handshake.SetChannelRatios(c.config.Channels.ReadRatio, c.config.Channels.WriteRatio)
+		handshake.SetChannelLimits(uint32(c.config.Channels.MinRead), uint32(c.config.Channels.MaxRead))
+
+		if err := handshake.DoClientHandshake(); err != nil {
+			transport.Close()
+			c.logger.Warn("handshake failed during reconnect", zap.Error(err))
+			if i >= 3 {
+				time.Sleep(time.Duration(i-2) * time.Second)
+			}
+			continue
+		}
+
+		negotiator := sshtransport.NewChannelNegotiator(handshake, c.channelMgr, c.config.Channels.MinWrite, c.logger)
+		if err := negotiator.NegotiateChannels(); err != nil {
+			transport.Close()
+			c.logger.Warn("channel negotiation failed during reconnect", zap.Error(err))
+			if i >= 3 {
+				time.Sleep(time.Duration(i-2) * time.Second)
+			}
+			continue
+		}
+
+		go negotiator.MonitorChannels(c.config.Channels.HealthCheck)
+
+		transport.StartKeepalive(15 * time.Second)
+
 		c.transport = transport
+		c.handshake = handshake
+
+		c.tunnel = tun.NewTunnel(c.tunIface, c.channelMgr, c.compressor, c.config.Client.MTU, c.logger)
+		if err := c.tunnel.Start(); err != nil {
+			c.logger.Error("failed to restart tunnel after reconnect", zap.Error(err))
+			transport.Close()
+			if i >= 3 {
+				time.Sleep(time.Duration(i-2) * time.Second)
+			}
+			continue
+		}
+
 		c.logger.Info("reconnected successfully")
 		return
 	}

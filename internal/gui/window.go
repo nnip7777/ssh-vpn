@@ -83,7 +83,7 @@ func (a *App) createHeader() fyne.CanvasObject {
 	logo.TextSize = 20
 	logo.TextStyle = fyne.TextStyle{Bold: true}
 
-	versionText := canvas.NewText("v0.4.0", textGrey)
+	versionText := canvas.NewText("v0.3.1", textGrey)
 	versionText.TextSize = 12
 
 	left := container.NewHBox(logo, versionText, layout.NewSpacer())

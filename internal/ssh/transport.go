@@ -33,11 +33,12 @@ func serverPutBuf(b *[]byte) {
 }
 
 type Transport struct {
-	config     *ssh.ClientConfig
-	serverAddr string
-	conn       *ssh.Client
-	mu         sync.RWMutex
-	logger     *zap.Logger
+	config        *ssh.ClientConfig
+	serverAddr    string
+	conn          *ssh.Client
+	mu            sync.RWMutex
+	logger        *zap.Logger
+	keepaliveStop chan struct{}
 }
 
 func NewTransport(serverAddr string, config *ssh.ClientConfig, logger *zap.Logger) *Transport {
@@ -59,6 +60,8 @@ func (t *Transport) Connect() error {
 
 	if tc, ok := tcpConn.(*net.TCPConn); ok {
 		tc.SetNoDelay(true)
+		tc.SetKeepAlive(true)
+		tc.SetKeepAlivePeriod(30 * time.Second)
 	}
 
 	sshConn, chans, reqs, err := ssh.NewClientConn(tcpConn, t.serverAddr, t.config)
@@ -91,6 +94,8 @@ func (t *Transport) OpenChannel(channelType string) (ssh.Channel, <-chan *ssh.Re
 }
 
 func (t *Transport) Close() error {
+	t.StopKeepalive()
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -104,6 +109,48 @@ func (t *Transport) IsConnected() bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.conn != nil
+}
+
+func (t *Transport) StartKeepalive(interval time.Duration) {
+	t.StopKeepalive()
+	t.keepaliveStop = make(chan struct{})
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-t.keepaliveStop:
+				return
+			case <-ticker.C:
+				t.mu.RLock()
+				conn := t.conn
+				t.mu.RUnlock()
+				if conn == nil {
+					return
+				}
+				ok, _, err := conn.SendRequest("keepalive@openssh.com", true, nil)
+				if err != nil || !ok {
+					t.logger.Warn("SSH keepalive failed, connection may be dead",
+						zap.Error(err), zap.Bool("reply", ok))
+					t.mu.Lock()
+					if t.conn != nil {
+						t.conn.Close()
+						t.conn = nil
+					}
+					t.mu.Unlock()
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (t *Transport) StopKeepalive() {
+	if t.keepaliveStop != nil {
+		close(t.keepaliveStop)
+		t.keepaliveStop = nil
+	}
 }
 
 func (t *Transport) GetConnection() *ssh.Client {
@@ -152,8 +199,8 @@ func NewServer(addr string, config *ssh.ServerConfig, manager *channel.Manager, 
 		tunIface: tunIface,
 		clients:  make(map[string]*ClientSession),
 		logger:   logger,
-		toTUN:    make(chan []byte, 2048),
-		fromTUN:  make(chan []byte, 2048),
+		toTUN:    make(chan []byte, 8192),
+		fromTUN:  make(chan []byte, 8192),
 		stopCh:   make(chan struct{}),
 	}, nil
 }
@@ -321,7 +368,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		conn:     sshConn,
 		channels: make(map[uint16]ssh.Channel),
 		types:    make(map[uint16]string),
-		writeCh:  make(chan []byte, 1024),
+		writeCh:  make(chan []byte, 4096),
 		stopCh:   make(chan struct{}),
 	}
 
@@ -408,12 +455,10 @@ func (s *Server) handleChannelData(client *ClientSession, channelID uint16, ch s
 
 	s.logger.Info("channel data handler started", zap.Uint16("channel", channelID))
 
+	buf := make([]byte, 32*1024)
 	for {
-		bufp := serverGetBuf()
-		buf := (*bufp)[:32*1024]
 		n, err := ch.Read(buf)
 		if err != nil {
-			serverPutBuf(bufp)
 			if err != io.EOF {
 				s.logger.Error("channel read error",
 					zap.Error(err),
@@ -425,7 +470,6 @@ func (s *Server) handleChannelData(client *ClientSession, channelID uint16, ch s
 		if n > 0 {
 			pkt := make([]byte, n)
 			copy(pkt, buf[:n])
-			serverPutBuf(bufp)
 			select {
 			case s.toTUN <- pkt:
 			default:

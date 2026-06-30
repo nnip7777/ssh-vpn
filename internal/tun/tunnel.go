@@ -59,8 +59,8 @@ func NewTunnel(iface *Interface, manager *channel.Manager, compressor compress.C
 		mtu:        mtu,
 		logger:     logger,
 		stopCh:     make(chan struct{}),
-		toChannels:   make(chan []byte, 2048),
-		fromChannels: make(chan []byte, 2048),
+		toChannels:   make(chan []byte, 8192),
+		fromChannels: make(chan []byte, 8192),
 	}
 }
 
@@ -182,6 +182,14 @@ func (t *Tunnel) readFromChannels() {
 					go t.readFromChannel(ch)
 				}
 			}
+
+			alive := channels[:0]
+			for _, ch := range channels {
+				if ch.IsHealthy(60 * time.Second) {
+					alive = append(alive, ch)
+				}
+			}
+			channels = alive
 		}
 	}
 }

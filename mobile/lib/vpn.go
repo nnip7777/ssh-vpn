@@ -233,6 +233,8 @@ func (v *VPNClient) Connect() error {
 
 	v.balancer = balancer.NewBalancer(v.channelMgr, balancer.StrategyWeightedRoundRobin, v.logger)
 
+	transport.StartKeepalive(15 * time.Second)
+
 	v.updateStatus("connected")
 	return nil
 }
@@ -305,6 +307,19 @@ func (v *VPNClient) monitorLoop() {
 }
 
 func (v *VPNClient) reconnect() {
+	v.mu.Lock()
+
+	if v.tunnel != nil {
+		v.tunnel.Stop()
+	}
+
+	if v.transport != nil {
+		v.transport.Close()
+	}
+
+	v.channelMgr.CloseAll()
+	v.mu.Unlock()
+
 	for i := 0; i < 5; i++ {
 		v.logger.Info("attempting to reconnect", zap.Int("attempt", i+1))
 
@@ -347,11 +362,22 @@ func (v *VPNClient) reconnect() {
 			continue
 		}
 
+		transport.StartKeepalive(15 * time.Second)
+
 		v.mu.Lock()
 		v.transport = transport
 		v.handshake = handshake
 		v.balancer = balancer.NewBalancer(v.channelMgr, balancer.StrategyWeightedRoundRobin, v.logger)
 		v.mu.Unlock()
+
+		v.tunnel = tun.NewTunnel(v.tunIface, v.channelMgr, v.compressor, v.config.Client.MTU, v.logger)
+		if err := v.tunnel.Start(); err != nil {
+			v.logger.Error("failed to restart tunnel after reconnect", zap.Error(err))
+			transport.Close()
+			time.Sleep(time.Duration(i+1) * time.Second)
+			continue
+		}
+
 		v.updateStatus("connected")
 		return
 	}

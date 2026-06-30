@@ -1,9 +1,9 @@
 # Binaries
 build/
 *.exe
-client
-server
-ssh-vpn-config
+/client
+/server
+/ssh-vpn-config
 
 # Go
 *.test
