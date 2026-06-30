@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	ChannelTypeVPN     = "session"
-	ChannelTypeControl = "session"
-	ChannelTypeRead    = "session"
-	ChannelTypeWrite   = "session"
+	ChannelTypeVPN     = "vpn-data"
+	ChannelTypeControl = "vpn-control"
+	ChannelTypeRead    = "vpn-read"
+	ChannelTypeWrite   = "vpn-write"
 )
 
 type HandshakeState int

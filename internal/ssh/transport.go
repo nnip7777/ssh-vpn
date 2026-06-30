@@ -313,7 +313,7 @@ func (s *Server) clientWriter(client *ClientSession) {
 			if ver != lastVer {
 				client.readChs = client.readChs[:0]
 				for id, ch := range client.channels {
-					if id > 1 {
+					if client.types[id] == "vpn-read" {
 						client.readChs = append(client.readChs, ch)
 					}
 				}
@@ -414,7 +414,6 @@ func (s *Server) handleChannel(client *ClientSession, newChan ssh.NewChannel) {
 	client.channels[id] = ch
 	client.types[id] = channelType
 	client.readChs = nil
-	channelCount := len(client.channels)
 	client.mu.Unlock()
 
 	s.logger.Info("new channel opened",
@@ -434,7 +433,7 @@ func (s *Server) handleChannel(client *ClientSession, newChan ssh.NewChannel) {
 		}
 	}()
 
-	if channelCount == 1 {
+	if channelType == "vpn-write" {
 		go s.handleChannelData(client, id, ch)
 	}
 }
