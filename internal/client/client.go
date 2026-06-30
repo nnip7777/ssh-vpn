@@ -16,10 +16,9 @@ import (
 )
 
 type extraConn struct {
-	transport  *sshtransport.Transport
-	negotiator *sshtransport.ChannelNegotiator
-	channelMgr *channel.Manager
-	tunnel     *tun.Tunnel
+	transport   *sshtransport.Transport
+	negotiator  *sshtransport.ChannelNegotiator
+	channelMgr  *channel.Manager
 	refreshStop chan struct{}
 }
 
@@ -220,18 +219,10 @@ func (c *Client) connectExtraPort(port int) {
 
 	transport.StartKeepalive(15 * time.Second)
 
-	extraTunnel := tun.NewTunnel(c.tunIface, extraMgr, c.compressor, c.config.Client.MTU, c.logger)
-	if err := extraTunnel.Start(); err != nil {
-		c.logger.Error("failed to start extra tunnel", zap.Error(err))
-		transport.Close()
-		return
-	}
-
 	ec := &extraConn{
 		transport:   transport,
 		negotiator:  negotiator,
 		channelMgr:  extraMgr,
-		tunnel:      extraTunnel,
 		refreshStop: refreshStop,
 	}
 	c.extraConns = append(c.extraConns, ec)
@@ -311,7 +302,6 @@ func (c *Client) reconnect() {
 
 	for _, ec := range c.extraConns {
 		close(ec.refreshStop)
-		ec.tunnel.Stop()
 		ec.transport.Close()
 	}
 	c.extraConns = nil
@@ -422,7 +412,6 @@ func (c *Client) Stop() {
 
 	for _, ec := range c.extraConns {
 		close(ec.refreshStop)
-		ec.tunnel.Stop()
 		ec.transport.Close()
 	}
 	c.extraConns = nil
