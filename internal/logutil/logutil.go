@@ -148,10 +148,7 @@ func NewLogger(dir, prefix string, level zapcore.Level) (*zap.Logger, *RotatingW
 	encoderCfg.EncodeTime = zapcore.ISO8601TimeEncoder
 	encoder := zapcore.NewJSONEncoder(encoderCfg)
 
-	core := zapcore.NewTee(
-		zapcore.NewCore(encoder, zapcore.AddSync(os.Stdout), level),
-		zapcore.NewCore(encoder, rw.WriteSync(), level),
-	)
+	core := zapcore.NewCore(encoder, rw.WriteSync(), level)
 
 	logger := zap.New(core, zap.AddCaller())
 	return logger, rw

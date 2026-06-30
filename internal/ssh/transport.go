@@ -324,10 +324,7 @@ func (s *Server) clientWriter(client *ClientSession) {
 
 			if len(readChs) > 0 {
 				idx := atomic.AddUint64(&rrIndex, 1) % uint64(len(readChs))
-				if _, werr := readChs[idx].Write(data); werr != nil {
-					s.logger.Debug("failed to write to client channel",
-						zap.Error(werr))
-				}
+				readChs[idx].Write(data)
 			}
 		}
 	}
@@ -443,11 +440,6 @@ func (s *Server) handleChannel(client *ClientSession, newChan ssh.NewChannel) {
 }
 
 func (s *Server) handleRequest(client *ClientSession, channelID uint16, req *ssh.Request) {
-	s.logger.Debug("handling request",
-		zap.String("client", client.conn.RemoteAddr().String()),
-		zap.Uint16("channel", channelID),
-		zap.String("type", req.Type))
-
 	if req.WantReply {
 		req.Reply(true, nil)
 	}
