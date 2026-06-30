@@ -201,6 +201,9 @@ func (td *ThrottleDetector) checkErrorSpike(chID uint16, totalErrors uint64, now
 
 	samplePrev := history[len(history)-2]
 	sampleCurr := history[len(history)-1]
+	if sampleCurr.bytesSent < samplePrev.bytesSent {
+		return nil
+	}
 	sentDelta := sampleCurr.bytesSent - samplePrev.bytesSent
 	if sentDelta == 0 {
 		return nil
@@ -291,8 +294,11 @@ func calcThroughput(samples []channelSample) float64 {
 	if elapsed < 0.5 {
 		return 0
 	}
-	deltaBytes := float64(last.bytesSent - first.bytesSent)
-	if last.bytesRecv > first.bytesRecv {
+	var deltaBytes float64
+	if last.bytesSent >= first.bytesSent {
+		deltaBytes = float64(last.bytesSent - first.bytesSent)
+	}
+	if last.bytesRecv >= first.bytesRecv {
 		d := float64(last.bytesRecv - first.bytesRecv)
 		if d > deltaBytes {
 			deltaBytes = d

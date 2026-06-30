@@ -210,9 +210,9 @@ func (a *App) refreshMonitor(m *monitorUI) {
 		elapsed = 1.0
 	}
 	currentTotal := tIn + tOut
-	delta := currentTotal - m.prevTotal
-	if currentTotal < m.prevTotal {
-		delta = 0
+	var delta uint64
+	if currentTotal >= m.prevTotal {
+		delta = currentTotal - m.prevTotal
 	}
 	throughput := float64(delta) / elapsed
 	m.prevTotal = currentTotal
