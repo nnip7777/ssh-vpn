@@ -90,6 +90,13 @@ func main() {
 	}
 	defer server.Close()
 
+	for _, extraPort := range cfg.Server.ExtraPorts {
+		extraAddr := fmt.Sprintf("%s:%d", cfg.Server.ListenAddr, extraPort)
+		if err := server.AddListener(extraAddr); err != nil {
+			logger.Fatal("failed to add extra listener", zap.Error(err))
+		}
+	}
+
 	server.Start()
 	go server.BroadcastToClients()
 
@@ -101,6 +108,7 @@ func main() {
 
 	logger.Info("server started",
 		zap.String("addr", addr),
+		zap.Ints("extra_ports", cfg.Server.ExtraPorts),
 		zap.String("tun", cfg.Server.TUNName),
 		zap.Int("max_clients", cfg.Server.MaxClients))
 

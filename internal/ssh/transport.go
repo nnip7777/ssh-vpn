@@ -160,18 +160,19 @@ func (t *Transport) GetConnection() *ssh.Client {
 }
 
 type Server struct {
-	addr       string
-	config     *ssh.ServerConfig
-	listener   net.Listener
-	manager    *channel.Manager
-	tunIface   *tun.Interface
-	clients    map[string]*ClientSession
-	mu         sync.RWMutex
-	logger     *zap.Logger
-	toTUN      chan []byte
-	fromTUN    chan []byte
-	stopCh     chan struct{}
-	running    bool
+	addr           string
+	config         *ssh.ServerConfig
+	listener       net.Listener
+	extraListeners []net.Listener
+	manager        *channel.Manager
+	tunIface       *tun.Interface
+	clients        map[string]*ClientSession
+	mu             sync.RWMutex
+	logger         *zap.Logger
+	toTUN          chan []byte
+	fromTUN        chan []byte
+	stopCh         chan struct{}
+	running        bool
 }
 
 type ClientSession struct {
@@ -204,6 +205,16 @@ func NewServer(addr string, config *ssh.ServerConfig, manager *channel.Manager, 
 		fromTUN:  make(chan []byte, 8192),
 		stopCh:   make(chan struct{}),
 	}, nil
+}
+
+func (s *Server) AddListener(addr string) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", addr, err)
+	}
+	s.extraListeners = append(s.extraListeners, listener)
+	s.logger.Info("added extra listener", zap.String("addr", addr))
+	return nil
 }
 
 func (s *Server) Start() {
@@ -331,17 +342,27 @@ func (s *Server) clientWriter(client *ClientSession) {
 }
 
 func (s *Server) Accept() error {
+	go s.acceptLoop(s.listener)
+
+	for _, listener := range s.extraListeners {
+		go s.acceptLoop(listener)
+	}
+
+	select {}
+}
+
+func (s *Server) acceptLoop(listener net.Listener) {
 	for {
-		conn, err := s.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			s.mu.RLock()
 			closed := s.listener == nil
 			s.mu.RUnlock()
 			if closed {
-				return nil
+				return
 			}
 			s.logger.Error("failed to accept connection", zap.Error(err))
-			return err
+			return
 		}
 
 		go s.handleConnection(conn)

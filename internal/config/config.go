@@ -18,6 +18,7 @@ type Config struct {
 type ServerConfig struct {
 	ListenAddr    string        `yaml:"listen_addr"`
 	ListenPort    int           `yaml:"listen_port"`
+	ExtraPorts    []int         `yaml:"extra_ports"`
 	MaxClients    int           `yaml:"max_clients"`
 	TUNName       string        `yaml:"tun_name"`
 	TUNAddr       string        `yaml:"tun_addr"`
@@ -28,6 +29,7 @@ type ServerConfig struct {
 type ClientConfig struct {
 	ServerAddr     string        `yaml:"server_addr"`
 	ServerPort     int           `yaml:"server_port"`
+	ExtraPorts     []int         `yaml:"extra_ports"`
 	Username       string        `yaml:"username"`
 	Password       string        `yaml:"password"`
 	PrivateKeyPath string        `yaml:"private_key_path"`

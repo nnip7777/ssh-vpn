@@ -32,6 +32,10 @@ type Client struct {
 	running      bool
 	stopCh       chan struct{}
 	refreshStop  chan struct{}
+
+	extraTransports  []*sshtransport.Transport
+	extraNegotiators []*sshtransport.ChannelNegotiator
+	extraRefreshStop []chan struct{}
 }
 
 func New(cfg *config.Config, logger *zap.Logger) (*Client, error) {
@@ -155,8 +159,58 @@ func (c *Client) Connect() error {
 
 	transport.StartKeepalive(15 * time.Second)
 
+	for _, extraPort := range c.config.Client.ExtraPorts {
+		c.connectExtraPort(extraPort)
+	}
+
 	c.logger.Info("connected to server")
 	return nil
+}
+
+func (c *Client) connectExtraPort(port int) {
+	addr := fmt.Sprintf("%s:%d", c.config.Client.ServerAddr, port)
+	c.logger.Info("connecting to extra port", zap.String("addr", addr))
+
+	sshCfg, err := sshtransport.NewSSHClientConfig(c.sshConfig, c.logger)
+	if err != nil {
+		c.logger.Warn("failed to create SSH config for extra port", zap.Error(err))
+		return
+	}
+
+	transport := sshtransport.NewTransport(addr, sshCfg, c.logger)
+	if err := transport.Connect(); err != nil {
+		c.logger.Warn("failed to connect to extra port", zap.Error(err))
+		return
+	}
+
+	handshake := sshtransport.NewClientHandshake(transport.GetConnection(), c.logger)
+	handshake.SetChannelRatios(c.config.Channels.ReadRatio, c.config.Channels.WriteRatio)
+	handshake.SetChannelLimits(uint32(c.config.Channels.MinRead), uint32(c.config.Channels.MaxRead))
+
+	if err := handshake.DoClientHandshake(); err != nil {
+		transport.Close()
+		c.logger.Warn("handshake failed on extra port", zap.Error(err))
+		return
+	}
+
+	negotiator := sshtransport.NewChannelNegotiator(handshake, c.channelMgr, c.config.Channels.MinWrite, c.logger)
+	if err := negotiator.NegotiateChannels(); err != nil {
+		transport.Close()
+		c.logger.Warn("channel negotiation failed on extra port", zap.Error(err))
+		return
+	}
+
+	refreshStop := make(chan struct{})
+	go negotiator.MonitorChannels(c.config.Channels.HealthCheck)
+	go negotiator.ProactiveRefresh(refreshStop)
+
+	transport.StartKeepalive(15 * time.Second)
+
+	c.extraTransports = append(c.extraTransports, transport)
+	c.extraNegotiators = append(c.extraNegotiators, negotiator)
+	c.extraRefreshStop = append(c.extraRefreshStop, refreshStop)
+
+	c.logger.Info("connected to extra port", zap.Int("port", port))
 }
 
 func (c *Client) Start() error {
@@ -229,6 +283,17 @@ func (c *Client) reconnect() {
 		c.transport.Close()
 	}
 
+	for _, transport := range c.extraTransports {
+		transport.Close()
+	}
+	c.extraTransports = nil
+	c.extraNegotiators = nil
+
+	for _, stop := range c.extraRefreshStop {
+		close(stop)
+	}
+	c.extraRefreshStop = nil
+
 	c.channelMgr.CloseAll()
 
 	for i := 0; i < 5; i++ {
@@ -295,6 +360,10 @@ func (c *Client) reconnect() {
 		c.transport = transport
 		c.handshake = handshake
 
+		for _, extraPort := range c.config.Client.ExtraPorts {
+			c.connectExtraPort(extraPort)
+		}
+
 		c.tunnel = tun.NewTunnel(c.tunIface, c.channelMgr, c.compressor, c.config.Client.MTU, c.logger)
 		if err := c.tunnel.Start(); err != nil {
 			c.logger.Error("failed to restart tunnel after reconnect", zap.Error(err))
@@ -329,6 +398,11 @@ func (c *Client) Stop() {
 		c.refreshStop = nil
 	}
 
+	for _, stop := range c.extraRefreshStop {
+		close(stop)
+	}
+	c.extraRefreshStop = nil
+
 	if c.tunnel != nil {
 		c.tunnel.Stop()
 	}
@@ -336,6 +410,12 @@ func (c *Client) Stop() {
 	if c.transport != nil {
 		c.transport.Close()
 	}
+
+	for _, transport := range c.extraTransports {
+		transport.Close()
+	}
+	c.extraTransports = nil
+	c.extraNegotiators = nil
 
 	if c.routeManager != nil {
 		c.routeManager.Restore()
