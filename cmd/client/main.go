@@ -68,8 +68,6 @@ func main() {
 		zap.String("server", fmt.Sprintf("%s:%d", cfg.Client.ServerAddr, cfg.Client.ServerPort)),
 		zap.String("tun", cfg.Client.TUNName))
 
-	go statsReporter(c, logger, 30*time.Second)
-
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 

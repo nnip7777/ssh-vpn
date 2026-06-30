@@ -99,8 +99,6 @@ func main() {
 		}
 	}()
 
-	go statsReporter(server, channelMgr, logger, 30*time.Second)
-
 	logger.Info("server started",
 		zap.String("addr", addr),
 		zap.String("tun", cfg.Server.TUNName),

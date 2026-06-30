@@ -88,7 +88,7 @@ func (t *Transport) OpenChannel(channelType string) (ssh.Channel, <-chan *ssh.Re
 		return nil, nil, fmt.Errorf("failed to open channel: %w", err)
 	}
 
-	t.logger.Info("opened SSH channel", zap.String("type", channelType))
+	t.logger.Debug("opened SSH channel", zap.String("type", channelType))
 
 	return ch, reqs, nil
 }
@@ -416,7 +416,7 @@ func (s *Server) handleChannel(client *ClientSession, newChan ssh.NewChannel) {
 	client.readChs = nil
 	client.mu.Unlock()
 
-	s.logger.Info("new channel opened",
+	s.logger.Debug("new channel opened",
 		zap.String("client", client.conn.RemoteAddr().String()),
 		zap.Uint16("id", id),
 		zap.String("type", channelType),
@@ -475,7 +475,7 @@ func (s *Server) handleChannelData(client *ClientSession, channelID uint16, ch s
 		ch.Close()
 	}()
 
-	s.logger.Info("channel data handler started", zap.Uint16("channel", channelID))
+	s.logger.Debug("channel data handler started", zap.Uint16("channel", channelID))
 
 	buf := make([]byte, 32*1024)
 	for {
