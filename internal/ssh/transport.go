@@ -409,7 +409,20 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		zap.String("addr", sshConn.RemoteAddr().String()),
 		zap.String("user", sshConn.User()))
 
-	go ssh.DiscardRequests(reqs)
+	go func() {
+		for req := range reqs {
+			switch req.Type {
+			case "keepalive@openssh.com":
+				if req.WantReply {
+					req.Reply(true, nil)
+				}
+			default:
+				if req.WantReply {
+					req.Reply(false, nil)
+				}
+			}
+		}
+	}()
 
 	handshake := NewServerHandshake(sshConn, s.logger)
 	if err := handshake.DoServerHandshake(); err != nil {
