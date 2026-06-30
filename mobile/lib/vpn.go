@@ -54,7 +54,7 @@ type VPNConfig struct {
 func DefaultVPNConfig() *VPNConfig {
 	return &VPNConfig{
 		ServerAddr:  "localhost",
-		ServerPort:  2222,
+		ServerPort:  22,
 		TUNName:     "tun0",
 		TUNAddr:     "10.0.0.2",
 		TUNNetmask:  "255.255.255.0",

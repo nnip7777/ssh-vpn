@@ -182,6 +182,7 @@ type ClientSession struct {
 	stopCh     chan struct{}
 	readChs    []ssh.Channel
 	channelsVer int
+	isVPN      bool
 	mu         sync.RWMutex
 }
 
@@ -312,7 +313,7 @@ func (s *Server) clientWriter(client *ClientSession) {
 			if ver != lastVer {
 				client.readChs = client.readChs[:0]
 				for id, ch := range client.channels {
-					if client.types[id] == "vpn-read" {
+					if id > 1 {
 						client.readChs = append(client.readChs, ch)
 					}
 				}
@@ -370,6 +371,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		types:    make(map[uint16]string),
 		writeCh:  make(chan []byte, 4096),
 		stopCh:   make(chan struct{}),
+		isVPN:    sshConn.User() == "vpnuser",
 	}
 
 	s.mu.Lock()
@@ -415,12 +417,19 @@ func (s *Server) handleChannel(client *ClientSession, newChan ssh.NewChannel) {
 	client.channels[id] = ch
 	client.types[id] = channelType
 	client.readChs = nil
+	channelCount := len(client.channels)
 	client.mu.Unlock()
 
 	s.logger.Info("new channel opened",
 		zap.String("client", client.conn.RemoteAddr().String()),
 		zap.Uint16("id", id),
-		zap.String("type", channelType))
+		zap.String("type", channelType),
+		zap.Bool("vpn", client.isVPN))
+
+	if !client.isVPN {
+		go s.handleNormalSSH(ch, reqs)
+		return
+	}
 
 	go func() {
 		for req := range reqs {
@@ -428,7 +437,7 @@ func (s *Server) handleChannel(client *ClientSession, newChan ssh.NewChannel) {
 		}
 	}()
 
-	if channelType == "vpn-write" {
+	if channelCount == 1 {
 		go s.handleChannelData(client, id, ch)
 	}
 }
@@ -441,6 +450,28 @@ func (s *Server) handleRequest(client *ClientSession, channelID uint16, req *ssh
 
 	if req.WantReply {
 		req.Reply(true, nil)
+	}
+}
+
+func (s *Server) handleNormalSSH(ch ssh.Channel, reqs <-chan *ssh.Request) {
+	defer ch.Close()
+
+	for req := range reqs {
+		switch req.Type {
+		case "shell", "exec":
+			if req.WantReply {
+				ch.Write([]byte("Permission denied.\r\n"))
+				req.Reply(false, nil)
+			}
+		case "keepalive@openssh.com":
+			if req.WantReply {
+				req.Reply(true, nil)
+			}
+		default:
+			if req.WantReply {
+				req.Reply(false, nil)
+			}
+		}
 	}
 }
 

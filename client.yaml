@@ -1,6 +1,6 @@
 client:
     server_addr: 72.56.246.125
-    server_port: 2222
+    server_port: 22
     username: vpnuser
     password: "changeme123"
     private_key_path: ""
