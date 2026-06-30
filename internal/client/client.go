@@ -15,6 +15,14 @@ import (
 	"go.uber.org/zap"
 )
 
+type extraConn struct {
+	transport  *sshtransport.Transport
+	negotiator *sshtransport.ChannelNegotiator
+	channelMgr *channel.Manager
+	tunnel     *tun.Tunnel
+	refreshStop chan struct{}
+}
+
 type Client struct {
 	config       *config.Config
 	sshConfig    *sshtransport.ClientConfig
@@ -33,9 +41,7 @@ type Client struct {
 	stopCh       chan struct{}
 	refreshStop  chan struct{}
 
-	extraTransports  []*sshtransport.Transport
-	extraNegotiators []*sshtransport.ChannelNegotiator
-	extraRefreshStop []chan struct{}
+	extraConns []*extraConn
 }
 
 func New(cfg *config.Config, logger *zap.Logger) (*Client, error) {
@@ -193,7 +199,15 @@ func (c *Client) connectExtraPort(port int) {
 		return
 	}
 
-	negotiator := sshtransport.NewChannelNegotiator(handshake, c.channelMgr, c.config.Channels.MinWrite, c.logger)
+	extraMgr := channel.NewManager(
+		c.config.Channels.MinRead, c.config.Channels.MaxRead,
+		c.config.Channels.MinWrite, c.config.Channels.MaxWrite,
+		c.config.Channels.ReadRatio, c.config.Channels.WriteRatio,
+		c.config.Channels.HealthCheck, c.config.Channels.Timeout,
+		c.logger,
+	)
+
+	negotiator := sshtransport.NewChannelNegotiator(handshake, extraMgr, c.config.Channels.MinWrite, c.logger)
 	if err := negotiator.NegotiateChannels(); err != nil {
 		transport.Close()
 		c.logger.Warn("channel negotiation failed on extra port", zap.Error(err))
@@ -206,9 +220,21 @@ func (c *Client) connectExtraPort(port int) {
 
 	transport.StartKeepalive(15 * time.Second)
 
-	c.extraTransports = append(c.extraTransports, transport)
-	c.extraNegotiators = append(c.extraNegotiators, negotiator)
-	c.extraRefreshStop = append(c.extraRefreshStop, refreshStop)
+	extraTunnel := tun.NewTunnel(c.tunIface, extraMgr, c.compressor, c.config.Client.MTU, c.logger)
+	if err := extraTunnel.Start(); err != nil {
+		c.logger.Error("failed to start extra tunnel", zap.Error(err))
+		transport.Close()
+		return
+	}
+
+	ec := &extraConn{
+		transport:   transport,
+		negotiator:  negotiator,
+		channelMgr:  extraMgr,
+		tunnel:      extraTunnel,
+		refreshStop: refreshStop,
+	}
+	c.extraConns = append(c.extraConns, ec)
 
 	c.logger.Info("connected to extra port", zap.Int("port", port))
 }
@@ -283,16 +309,12 @@ func (c *Client) reconnect() {
 		c.transport.Close()
 	}
 
-	for _, transport := range c.extraTransports {
-		transport.Close()
+	for _, ec := range c.extraConns {
+		close(ec.refreshStop)
+		ec.tunnel.Stop()
+		ec.transport.Close()
 	}
-	c.extraTransports = nil
-	c.extraNegotiators = nil
-
-	for _, stop := range c.extraRefreshStop {
-		close(stop)
-	}
-	c.extraRefreshStop = nil
+	c.extraConns = nil
 
 	c.channelMgr.CloseAll()
 
@@ -398,10 +420,12 @@ func (c *Client) Stop() {
 		c.refreshStop = nil
 	}
 
-	for _, stop := range c.extraRefreshStop {
-		close(stop)
+	for _, ec := range c.extraConns {
+		close(ec.refreshStop)
+		ec.tunnel.Stop()
+		ec.transport.Close()
 	}
-	c.extraRefreshStop = nil
+	c.extraConns = nil
 
 	if c.tunnel != nil {
 		c.tunnel.Stop()
@@ -410,12 +434,6 @@ func (c *Client) Stop() {
 	if c.transport != nil {
 		c.transport.Close()
 	}
-
-	for _, transport := range c.extraTransports {
-		transport.Close()
-	}
-	c.extraTransports = nil
-	c.extraNegotiators = nil
 
 	if c.routeManager != nil {
 		c.routeManager.Restore()
