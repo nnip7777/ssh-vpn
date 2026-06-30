@@ -20,6 +20,7 @@ type Client struct {
 	sshConfig    *sshtransport.ClientConfig
 	transport    *sshtransport.Transport
 	handshake    *sshtransport.Handshake
+	negotiator   *sshtransport.ChannelNegotiator
 	channelMgr   *channel.Manager
 	balancer     *balancer.Balancer
 	tunIface     *tun.Interface
@@ -30,6 +31,7 @@ type Client struct {
 	mu           sync.RWMutex
 	running      bool
 	stopCh       chan struct{}
+	refreshStop  chan struct{}
 }
 
 func New(cfg *config.Config, logger *zap.Logger) (*Client, error) {
@@ -142,7 +144,14 @@ func (c *Client) Connect() error {
 		return fmt.Errorf("channel negotiation failed: %w", err)
 	}
 
+	c.negotiator = negotiator
+
+	if c.refreshStop != nil {
+		close(c.refreshStop)
+	}
+	c.refreshStop = make(chan struct{})
 	go negotiator.MonitorChannels(c.config.Channels.HealthCheck)
+	go negotiator.ProactiveRefresh(c.refreshStop)
 
 	transport.StartKeepalive(15 * time.Second)
 
@@ -272,7 +281,14 @@ func (c *Client) reconnect() {
 			continue
 		}
 
+		c.negotiator = negotiator
+
+		if c.refreshStop != nil {
+			close(c.refreshStop)
+		}
+		c.refreshStop = make(chan struct{})
 		go negotiator.MonitorChannels(c.config.Channels.HealthCheck)
+		go negotiator.ProactiveRefresh(c.refreshStop)
 
 		transport.StartKeepalive(15 * time.Second)
 
@@ -307,6 +323,11 @@ func (c *Client) Stop() {
 
 	c.running = false
 	close(c.stopCh)
+
+	if c.refreshStop != nil {
+		close(c.refreshStop)
+		c.refreshStop = nil
+	}
 
 	if c.tunnel != nil {
 		c.tunnel.Stop()

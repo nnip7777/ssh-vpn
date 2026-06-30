@@ -18,6 +18,7 @@ type VPNClient struct {
 	config     *config.Config
 	transport  *sshtransport.Transport
 	handshake  *sshtransport.Handshake
+	negotiator *sshtransport.ChannelNegotiator
 	channelMgr *channel.Manager
 	balancer   *balancer.Balancer
 	tunIface   *tun.Interface
@@ -30,6 +31,7 @@ type VPNClient struct {
 	onStatus   func(string)
 	onError    func(string)
 	onStats    func(map[string]interface{})
+	refreshStop chan struct{}
 }
 
 type VPNConfig struct {
@@ -231,6 +233,15 @@ func (v *VPNClient) Connect() error {
 		return err
 	}
 
+	v.negotiator = negotiator
+
+	if v.refreshStop != nil {
+		close(v.refreshStop)
+	}
+	v.refreshStop = make(chan struct{})
+	go negotiator.MonitorChannels(v.config.Channels.HealthCheck)
+	go negotiator.ProactiveRefresh(v.refreshStop)
+
 	v.balancer = balancer.NewBalancer(v.channelMgr, balancer.StrategyWeightedRoundRobin, v.logger)
 
 	transport.StartKeepalive(15 * time.Second)
@@ -362,6 +373,15 @@ func (v *VPNClient) reconnect() {
 			continue
 		}
 
+		v.negotiator = negotiator
+
+		if v.refreshStop != nil {
+			close(v.refreshStop)
+		}
+		v.refreshStop = make(chan struct{})
+		go negotiator.MonitorChannels(v.config.Channels.HealthCheck)
+		go negotiator.ProactiveRefresh(v.refreshStop)
+
 		transport.StartKeepalive(15 * time.Second)
 
 		v.mu.Lock()
@@ -395,6 +415,11 @@ func (v *VPNClient) Disconnect() {
 	}
 
 	v.running = false
+
+	if v.refreshStop != nil {
+		close(v.refreshStop)
+		v.refreshStop = nil
+	}
 
 	if v.tunnel != nil {
 		v.tunnel.Stop()

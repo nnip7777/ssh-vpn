@@ -189,14 +189,22 @@ type ChannelNegotiator struct {
 	manager   *channel.Manager
 	logger    *zap.Logger
 	minWrite  int
+
+	fightMode       bool
+	recentDeaths    int
+	deathMu         sync.Mutex
+	deathWindowStart time.Time
+	refreshInterval time.Duration
 }
 
 func NewChannelNegotiator(handshake *Handshake, manager *channel.Manager, minWrite int, logger *zap.Logger) *ChannelNegotiator {
 	return &ChannelNegotiator{
-		handshake: handshake,
-		manager:   manager,
-		logger:    logger,
-		minWrite:  minWrite,
+		handshake:       handshake,
+		manager:         manager,
+		logger:          logger,
+		minWrite:        minWrite,
+		refreshInterval: 30 * time.Second,
+		deathWindowStart: time.Now(),
 	}
 }
 
@@ -304,6 +312,7 @@ func (cn *ChannelNegotiator) checkAndAdjustChannels() {
 	}
 
 	if writeCount < minWrite {
+		cn.RecordDeath()
 		cn.logger.Warn("write channels below minimum, creating replacement",
 			zap.Int("current", writeCount),
 			zap.Int("min", minWrite))
@@ -317,6 +326,7 @@ func (cn *ChannelNegotiator) checkAndAdjustChannels() {
 	}
 
 	if readCount < minRead {
+		cn.RecordDeath()
 		cn.logger.Warn("read channels below minimum, creating replacement",
 			zap.Int("current", readCount),
 			zap.Int("min", minRead))
@@ -341,6 +351,97 @@ func (cn *ChannelNegotiator) checkAndAdjustChannels() {
 
 	if currentRatio < targetRatio-0.1 && writeCount < maxWrite {
 		cn.createChannel(channel.ChannelWrite)
+	}
+}
+
+func (cn *ChannelNegotiator) RecordDeath() {
+	cn.deathMu.Lock()
+	defer cn.deathMu.Unlock()
+
+	now := time.Now()
+	if now.Sub(cn.deathWindowStart) > 30*time.Second {
+		cn.recentDeaths = 0
+		cn.deathWindowStart = now
+	}
+	cn.recentDeaths++
+}
+
+func (cn *ChannelNegotiator) maybeAdjustMode() {
+	cn.deathMu.Lock()
+	defer cn.deathMu.Unlock()
+
+	if cn.recentDeaths > 2 && !cn.fightMode {
+		cn.fightMode = true
+		cn.refreshInterval = 5 * time.Second
+		cn.logger.Warn("entered fight mode",
+			zap.Int("deaths_in_30s", cn.recentDeaths))
+	}
+
+	if cn.recentDeaths == 0 && cn.fightMode {
+		cn.fightMode = false
+		cn.refreshInterval = 30 * time.Second
+		cn.logger.Info("exited fight mode")
+	}
+}
+
+func (cn *ChannelNegotiator) ProactiveRefresh(stopCh <-chan struct{}) {
+	currentInterval := cn.refreshInterval
+	ticker := time.NewTicker(currentInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+			cn.maybeAdjustMode()
+
+			cn.deathMu.Lock()
+			newInterval := cn.refreshInterval
+			cn.deathMu.Unlock()
+
+			if newInterval != currentInterval {
+				currentInterval = newInterval
+				ticker.Reset(currentInterval)
+			}
+
+			cn.refreshOldestChannel()
+		}
+	}
+}
+
+func (cn *ChannelNegotiator) refreshOldestChannel() {
+	cn.handshake.mu.RLock()
+	maxRead := int(cn.handshake.maxChannels)
+	cn.handshake.mu.RUnlock()
+
+	maxWrite := maxRead / 2
+	if maxWrite < cn.minWrite {
+		maxWrite = cn.minWrite
+	}
+
+	readCount, writeCount := cn.manager.ChannelCount()
+
+	if readCount >= maxRead && writeCount >= maxWrite {
+		return
+	}
+
+	if readCount < maxRead {
+		if err := cn.createChannel(channel.ChannelRead); err != nil {
+			cn.logger.Debug("proactive refresh: failed to create read channel", zap.Error(err))
+			return
+		}
+		cn.logger.Debug("proactive refresh: created read channel",
+			zap.Int("total_read", readCount+1))
+	}
+
+	if writeCount < maxWrite {
+		if err := cn.createChannel(channel.ChannelWrite); err != nil {
+			cn.logger.Debug("proactive refresh: failed to create write channel", zap.Error(err))
+			return
+		}
+		cn.logger.Debug("proactive refresh: created write channel",
+			zap.Int("total_write", writeCount+1))
 	}
 }
 
