@@ -159,6 +159,17 @@ func (t *Transport) GetConnection() *ssh.Client {
 	return t.conn
 }
 
+type EventStats struct {
+	channelsOpened uint64
+	channelsClosed uint64
+	channelErrors  uint64
+	tunErrors      uint64
+	tunWriteErrors uint64
+	sshdConns      uint64
+	sshdFails      uint64
+	lastFlush      time.Time
+}
+
 type Server struct {
 	addr           string
 	config         *ssh.ServerConfig
@@ -173,6 +184,8 @@ type Server struct {
 	fromTUN        chan []byte
 	stopCh         chan struct{}
 	running        bool
+	stats          EventStats
+	statsMu        sync.Mutex
 }
 
 type ClientSession struct {
@@ -224,8 +237,68 @@ func (s *Server) Start() {
 
 	go s.readFromTUN()
 	go s.writeToTUN()
+	go s.statsFlusher()
 
 	s.logger.Info("server tunnel started")
+}
+
+const statsFlushInterval = 5 * time.Minute
+
+func (s *Server) statsFlusher() {
+	ticker := time.NewTicker(statsFlushInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			s.flushStats()
+		}
+	}
+}
+
+func (s *Server) flushStats() {
+	s.statsMu.Lock()
+	chOpen := s.stats.channelsOpened
+	chClose := s.stats.channelsClosed
+	chErr := s.stats.channelErrors
+	tunErr := s.stats.tunErrors
+	tunWrErr := s.stats.tunWriteErrors
+	sshdConn := s.stats.sshdConns
+	sshdFail := s.stats.sshdFails
+	s.stats = EventStats{lastFlush: time.Now()}
+	s.statsMu.Unlock()
+
+	s.logger.Info("event stats",
+		zap.Uint64("ch_opened", chOpen),
+		zap.Uint64("ch_closed", chClose),
+		zap.Uint64("ch_errors", chErr),
+		zap.Uint64("tun_errors", tunErr),
+		zap.Uint64("tun_write_errors", tunWrErr),
+		zap.Uint64("sshd_conns", sshdConn),
+		zap.Uint64("sshd_fails", sshdFail),
+	)
+}
+
+func (s *Server) incStat(field string) {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	switch field {
+	case "ch_opened":
+		s.stats.channelsOpened++
+	case "ch_closed":
+		s.stats.channelsClosed++
+	case "ch_errors":
+		s.stats.channelErrors++
+	case "tun_errors":
+		s.stats.tunErrors++
+	case "tun_write_errors":
+		s.stats.tunWriteErrors++
+	case "sshd_conns":
+		s.stats.sshdConns++
+	case "sshd_fails":
+		s.stats.sshdFails++
+	}
 }
 
 func (s *Server) Stop() {
@@ -255,7 +328,7 @@ func (s *Server) readFromTUN() {
 		if err != nil {
 			serverPutBuf(bufp)
 			if err != io.EOF {
-				s.logger.Error("TUN read error", zap.Error(err))
+				s.incStat("tun_errors")
 			}
 			continue
 		}
@@ -282,7 +355,7 @@ func (s *Server) writeToTUN() {
 			return
 		case pkt := <-s.toTUN:
 			if _, werr := s.tunIface.Write(pkt); werr != nil {
-				s.logger.Error("TUN write error", zap.Error(werr))
+				s.incStat("tun_write_errors")
 			}
 		}
 	}
@@ -376,7 +449,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 
 	sshConn, chans, reqs, err := ssh.NewServerConn(netConn, s.config)
 	if err != nil {
-		s.logger.Error("failed to establish SSH connection", zap.Error(err))
+		s.incStat("sshd_fails")
 		netConn.Close()
 		return
 	}
@@ -405,6 +478,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		close(client.writeCh)
 	}()
 
+	s.incStat("sshd_conns")
 	s.logger.Info("client connected",
 		zap.String("addr", sshConn.RemoteAddr().String()),
 		zap.String("user", sshConn.User()))
@@ -450,11 +524,7 @@ func (s *Server) handleChannel(client *ClientSession, newChan ssh.NewChannel) {
 	client.readChs = nil
 	client.mu.Unlock()
 
-	s.logger.Debug("new channel opened",
-		zap.String("client", client.conn.RemoteAddr().String()),
-		zap.Uint16("id", id),
-		zap.String("type", channelType),
-		zap.Bool("vpn", client.isVPN))
+	s.incStat("ch_opened")
 
 	if !client.isVPN {
 		go s.handleNormalSSH(ch, reqs)
@@ -509,17 +579,16 @@ func (s *Server) handleChannelData(client *ClientSession, channelID uint16, ch s
 		ch.Close()
 	}()
 
-	s.logger.Debug("channel data handler started", zap.Uint16("channel", channelID))
+	s.incStat("ch_opened")
 
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := ch.Read(buf)
 		if err != nil {
 			if err != io.EOF {
-				s.logger.Error("channel read error",
-					zap.Error(err),
-					zap.Uint16("channel", channelID))
+				s.incStat("ch_errors")
 			}
+			s.incStat("ch_closed")
 			return
 		}
 
