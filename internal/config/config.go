@@ -16,15 +16,16 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	ListenAddr    string        `yaml:"listen_addr"`
-	ListenPort    int           `yaml:"listen_port"`
-	ExtraPorts    []int         `yaml:"extra_ports"`
-	MaxClients    int           `yaml:"max_clients"`
-	Password      string        `yaml:"password"`
-	TUNName       string        `yaml:"tun_name"`
-	TUNAddr       string        `yaml:"tun_addr"`
-	TUNNetmask    string        `yaml:"tun_netmask"`
-	MTU           int           `yaml:"mtu"`
+	ListenAddr      string        `yaml:"listen_addr"`
+	ListenPort      int           `yaml:"listen_port"`
+	ExtraPorts      []int         `yaml:"extra_ports"`
+	MaxClients      int           `yaml:"max_clients"`
+	Password        string        `yaml:"password"`
+	TUNName         string        `yaml:"tun_name"`
+	TUNAddr         string        `yaml:"tun_addr"`
+	TUNNetmask      string        `yaml:"tun_netmask"`
+	MTU             int           `yaml:"mtu"`
+	VPNUsers        []string      `yaml:"vpn_users"`
 }
 
 type ClientConfig struct {
@@ -80,13 +81,15 @@ func Load(path string) (*Config, error) {
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			ListenAddr: "0.0.0.0",
-			ListenPort: 2222,
-			MaxClients: 100,
-			TUNName:    "ssh-vpn0",
-			TUNAddr:    "10.8.0.1",
-			TUNNetmask: "255.255.255.0",
-			MTU:        1400,
+			ListenAddr:  "0.0.0.0",
+			ListenPort:  2222,
+			ExtraPorts:  []int{2223, 2224, 2225},
+			MaxClients:  100,
+			TUNName:     "ssh-vpn0",
+			TUNAddr:     "10.8.0.1",
+			TUNNetmask:  "255.255.255.0",
+			MTU:         1280,
+			VPNUsers:    []string{"vpnuser"},
 		},
 		Client: ClientConfig{
 			ServerAddr:  "localhost",
@@ -94,7 +97,7 @@ func DefaultConfig() *Config {
 			TUNName:     "ssh-vpn0",
 			TUNAddr:     "10.8.0.2",
 			TUNNetmask:  "255.255.255.0",
-			MTU:         1400,
+			MTU:         1280,
 			AutoConnect: true,
 		},
 		Channels: ChannelsConfig{

@@ -126,7 +126,7 @@ func NewSSHServerConfig(cfg *ServerConfig, logger *zap.Logger) (*ssh.ServerConfi
 
 	sshConfig := &ssh.ServerConfig{
 		MaxAuthTries:  cfg.MaxAuthTries,
-		ServerVersion: "SSH-VPN-1.0",
+		ServerVersion: "SSH-2.0-OpenSSH_8.9",
 	}
 
 	sshConfig.AddHostKey(hostKey)

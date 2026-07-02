@@ -85,7 +85,7 @@ func main() {
 	)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.ListenAddr, cfg.Server.ListenPort)
-	server, err := ssh.NewServer(addr, sshServerConfig, channelMgr, tunIface, logger)
+	server, err := ssh.NewServer(addr, sshServerConfig, channelMgr, tunIface, cfg.Server.VPNUsers, logger)
 	if err != nil {
 		logger.Fatal("failed to create SSH server", zap.Error(err))
 	}

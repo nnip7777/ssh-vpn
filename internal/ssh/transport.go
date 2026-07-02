@@ -186,6 +186,7 @@ type Server struct {
 	running        bool
 	stats          EventStats
 	statsMu        sync.Mutex
+	vpnUsers       map[string]bool
 }
 
 type ClientSession struct {
@@ -200,10 +201,15 @@ type ClientSession struct {
 	mu         sync.RWMutex
 }
 
-func NewServer(addr string, config *ssh.ServerConfig, manager *channel.Manager, tunIface *tun.Interface, logger *zap.Logger) (*Server, error) {
+func NewServer(addr string, config *ssh.ServerConfig, manager *channel.Manager, tunIface *tun.Interface, vpnUsers []string, logger *zap.Logger) (*Server, error) {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen: %w", err)
+	}
+
+	users := make(map[string]bool)
+	for _, u := range vpnUsers {
+		users[u] = true
 	}
 
 	return &Server{
@@ -217,6 +223,7 @@ func NewServer(addr string, config *ssh.ServerConfig, manager *channel.Manager, 
 		toTUN:    make(chan []byte, 8192),
 		fromTUN:  make(chan []byte, 8192),
 		stopCh:   make(chan struct{}),
+		vpnUsers: users,
 	}, nil
 }
 
@@ -462,7 +469,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		types:    make(map[uint16]string),
 		writeCh:  make(chan []byte, 4096),
 		stopCh:   make(chan struct{}),
-		isVPN:    sshConn.User() == "vpnuser",
+		isVPN:    s.vpnUsers[sshConn.User()],
 	}
 
 	s.mu.Lock()

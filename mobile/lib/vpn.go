@@ -60,7 +60,7 @@ func DefaultVPNConfig() *VPNConfig {
 		TUNName:     "tun0",
 		TUNAddr:     "10.0.0.2",
 		TUNNetmask:  "255.255.255.0",
-		MTU:         1400,
+		MTU:         1280,
 		MinRead:     2,
 		MaxRead:     8,
 		MinWrite:    1,

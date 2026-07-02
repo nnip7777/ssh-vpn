@@ -187,7 +187,7 @@ class MyVPNService : VpnService() {
 | TUNName | String | "tun0" | TUN interface name |
 | TUNAddr | String | "10.0.0.2" | TUN IP address |
 | TUNNetmask | String | "255.255.255.0" | TUN netmask |
-| MTU | Int | 1400 | Maximum transmission unit |
+| MTU | Int | 1280 | Maximum transmission unit |
 | MinRead | Int | 2 | Minimum read channels |
 | MaxRead | Int | 8 | Maximum read channels |
 | MinWrite | Int | 1 | Minimum write channels |
