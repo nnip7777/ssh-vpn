@@ -3,10 +3,12 @@ package ssh
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/pem"
 	"fmt"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -14,9 +16,50 @@ import (
 )
 
 type ServerConfig struct {
-	HostKeyPath       string
+	HostKeyPath        string
 	AuthorizedKeysPath string
-	MaxAuthTries      int
+	MaxAuthTries       int
+	Password           string
+}
+
+type rateLimiter struct {
+	mu       sync.Mutex
+	failures map[string][]time.Time
+	maxFails int
+	window   time.Duration
+}
+
+func newRateLimiter(maxFails int, window time.Duration) *rateLimiter {
+	return &rateLimiter{
+		failures: make(map[string][]time.Time),
+		maxFails: maxFails,
+		window:   window,
+	}
+}
+
+func (r *rateLimiter) allow(ip string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-r.window)
+
+	times := r.failures[ip]
+	filtered := times[:0]
+	for _, t := range times {
+		if t.After(cutoff) {
+			filtered = append(filtered, t)
+		}
+	}
+	r.failures[ip] = filtered
+
+	return len(filtered) < r.maxFails
+}
+
+func (r *rateLimiter) recordFailure(ip string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failures[ip] = append(r.failures[ip], time.Now())
 }
 
 func GenerateHostKey(path string) error {
@@ -96,7 +139,14 @@ func NewSSHServerConfig(cfg *ServerConfig, logger *zap.Logger) (*ssh.ServerConfi
 		}
 	}
 
+	limiter := newRateLimiter(10, 5*time.Minute)
+
 	sshConfig.PublicKeyCallback = func(conn ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
+		ip := conn.RemoteAddr().String()
+		if !limiter.allow(ip) {
+			logger.Warn("rate limited", zap.String("from", ip))
+			return nil, fmt.Errorf("rate limited")
+		}
 		if authorizedKeys != nil {
 			fp := ssh.FingerprintSHA256(pubKey)
 			if authorizedKeys[fp] {
@@ -107,18 +157,34 @@ func NewSSHServerConfig(cfg *ServerConfig, logger *zap.Logger) (*ssh.ServerConfi
 				}, nil
 			}
 		}
+		limiter.recordFailure(ip)
 		return nil, fmt.Errorf("unauthorized")
 	}
 
 	sshConfig.PasswordCallback = func(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
-		logger.Info("password auth attempt",
-			zap.String("user", conn.User()),
-			zap.String("from", conn.RemoteAddr().String()))
+		ip := conn.RemoteAddr().String()
+		if !limiter.allow(ip) {
+			logger.Warn("rate limited", zap.String("from", ip), zap.String("user", conn.User()))
+			return nil, fmt.Errorf("rate limited")
+		}
+		if cfg.Password == "" {
+			logger.Warn("password auth disabled, no password configured",
+				zap.String("user", conn.User()), zap.String("from", ip))
+			return nil, fmt.Errorf("password auth disabled")
+		}
+		if subtle.ConstantTimeCompare(password, []byte(cfg.Password)) != 1 {
+			limiter.recordFailure(ip)
+			logger.Warn("wrong password",
+				zap.String("user", conn.User()), zap.String("from", ip))
+			return nil, fmt.Errorf("authentication failed")
+		}
+		logger.Info("password auth success",
+			zap.String("user", conn.User()), zap.String("from", ip))
 		return &ssh.Permissions{}, nil
 	}
 
 	sshConfig.KeyboardInteractiveCallback = func(conn ssh.ConnMetadata, client ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
-		return &ssh.Permissions{}, nil
+		return nil, fmt.Errorf("keyboard-interactive not supported")
 	}
 
 	return sshConfig, nil

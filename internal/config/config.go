@@ -20,6 +20,7 @@ type ServerConfig struct {
 	ListenPort    int           `yaml:"listen_port"`
 	ExtraPorts    []int         `yaml:"extra_ports"`
 	MaxClients    int           `yaml:"max_clients"`
+	Password      string        `yaml:"password"`
 	TUNName       string        `yaml:"tun_name"`
 	TUNAddr       string        `yaml:"tun_addr"`
 	TUNNetmask    string        `yaml:"tun_netmask"`

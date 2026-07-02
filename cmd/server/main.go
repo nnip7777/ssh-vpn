@@ -55,6 +55,7 @@ func main() {
 		HostKeyPath:        "host_key",
 		AuthorizedKeysPath: "authorized_keys",
 		MaxAuthTries:       3,
+		Password:           cfg.Server.Password,
 	}, logger)
 	if err != nil {
 		logger.Fatal("failed to create SSH config", zap.Error(err))

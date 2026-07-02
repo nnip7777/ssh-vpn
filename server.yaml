@@ -3,6 +3,7 @@ server:
     listen_port: 2222
     extra_ports: [2223, 2224, 2225]
     max_clients: 100
+    password: "changeme123"
     tun_name: ssh-vpn0
     tun_addr: 10.8.0.1
     tun_netmask: 255.255.255.0
